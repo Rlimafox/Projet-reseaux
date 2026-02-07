@@ -1,0 +1,2 @@
+Hello Receiver !
+Ceci est un test UDP.
