@@ -13,7 +13,7 @@ public class Sender {
         int port = Integer.parseInt(args[1]);
         String filename = args[2];
 
-        byte[] fileData = Files.readAllBytes(Path.of("src/test.txt"));
+        byte[] fileData = Files.readAllBytes(Path.of("src/test1.txt"));
 
         InetAddress address = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
@@ -59,7 +59,6 @@ public class Sender {
 // --- ENVOI DU FICHIER AVEC ACK ---
         int offset = 0;
         while (offset < fileData.length) {
-            System.out.println(" s ");
             int chunkSize = Math.min(MAX_DATA, fileData.length - offset);
             byte[] chunk = new byte[chunkSize];
             System.arraycopy(fileData, offset, chunk, 0, chunkSize);
@@ -90,6 +89,9 @@ public class Sender {
                     if (ackSeq == seqSender) {
                         acked = true;
                         System.out.println("ACK reçu pour seq=" + ackSeq);
+                    }
+                    else {
+                        System.out.println("ACK non reçu pour seq=" + ackSeq);
                     }
                 } catch (SocketTimeoutException e) {
                     System.out.println("Timeout, retransmission seq=" + seqSender);

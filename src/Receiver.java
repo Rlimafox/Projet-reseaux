@@ -47,10 +47,10 @@ public class Receiver {
 
             if (p.seq == lastSeqOk) {
                 System.out.println("Reçu OK seq=" + p.seq + " : " + new String(p.data));
-                lastSeqOk++;
-                break;
+                //lastSeqOk++;
             } else {
                 System.out.println("Paquet ignoré seq=" + p.seq + " (attendu seq=" + lastSeqOk + ")");
+                break;
             }
 
             // --- Envoi ACK ---
@@ -69,7 +69,8 @@ public class Receiver {
                     dpData.getAddress(),
                     dpData.getPort()
             ));
-            System.out.println("ACK envoyé seq=" + (lastSeqOk - 1));
+            System.out.println("ACK envoyé seq=" + (lastSeqOk));
+            lastSeqOk++;
         }
     }
 }
