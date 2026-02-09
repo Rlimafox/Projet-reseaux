@@ -13,8 +13,8 @@ public class Sender {
         int port = Integer.parseInt(args[1]);
         String filename = args[2];
 
-        byte[] fileData = Files.readAllBytes(Path.of("C:\\Users\\rlima\\OneDrive\\Documents\\Ephec Projet Labo\\Projet de Labo\\src\\ test.txt"));
-System.out.println(fileData.length);
+        byte[] fileData = Files.readAllBytes(Path.of("src/test.txt"));
+
         InetAddress address = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
 
