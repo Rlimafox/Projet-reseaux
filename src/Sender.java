@@ -13,7 +13,7 @@ public class Sender {
         int port = Integer.parseInt(args[1]);
         String filename = args[2];
 
-        byte[] fileData = Files.readAllBytes(Path.of("src/test100mo.txt"));
+        byte[] fileData = Files.readAllBytes(Path.of(filename));
 
         InetAddress address = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
@@ -21,7 +21,6 @@ public class Sender {
         Random rand = new Random();
         int seqSender = rand.nextInt(65536);
 
-        // --- HANDSHAKE (comme avant) ---
         // --- HANDSHAKE PROPRE ---
         Packet syn = new Packet();
         syn.seq = seqSender;
