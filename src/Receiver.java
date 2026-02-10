@@ -45,7 +45,7 @@ public class Receiver {
 
             Packet p = PacketEncoder.decode(dpData.getData());
 
-            if (p.seq == lastSeqOk) {
+            if (p.seq == lastSeqOk%65536) {
                 System.out.println("Reçu OK seq=" + p.seq + " : " + new String(p.data));
                 //lastSeqOk++;
             } else {
@@ -69,7 +69,7 @@ public class Receiver {
                     dpData.getAddress(),
                     dpData.getPort()
             ));
-            System.out.println("ACK envoyé seq=" + (lastSeqOk));
+            System.out.println("ACK envoyé seq=" + (lastSeqOk%65536));
             lastSeqOk++;
         }
     }

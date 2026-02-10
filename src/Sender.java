@@ -13,7 +13,7 @@ public class Sender {
         int port = Integer.parseInt(args[1]);
         String filename = args[2];
 
-        byte[] fileData = Files.readAllBytes(Path.of("src/test1.txt"));
+        byte[] fileData = Files.readAllBytes(Path.of("src/test100mo.txt"));
 
         InetAddress address = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
@@ -86,7 +86,7 @@ public class Sender {
                     bb.order(ByteOrder.BIG_ENDIAN);
                     int ackSeq = Short.toUnsignedInt(bb.getShort());
 
-                    if (ackSeq == seqSender) {
+                    if (ackSeq == seqSender%65536) {
                         acked = true;
                         System.out.println("ACK reçu pour seq=" + ackSeq);
                     }
