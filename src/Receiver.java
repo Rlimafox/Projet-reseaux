@@ -3,7 +3,7 @@ import java.util.*;
 
 public class Receiver {
 
-    static final int RWND_MAX = 10;
+    static final int BUFFER_MAX = 32;
 
     public static void main(String[] args) throws Exception {
 
@@ -12,6 +12,9 @@ public class Receiver {
 
         byte[] buffer = new byte[2048];
         int expectedSeq;
+
+        int rwnd = BUFFER_MAX;
+        Queue<Integer> bufferQueue = new ArrayDeque<>();
 
         System.out.println("Receiver en écoute...");
 
@@ -26,10 +29,14 @@ public class Receiver {
         synAck.seq = new Random().nextInt(65536);
         synAck.ack = expectedSeq;
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
-        synAck.data = new byte[] { RWND_MAX };
+        synAck.data = new byte[] { (byte) rwnd };
 
-        byte[] raw = PacketEncoder.encode(synAck);
-        socket.send(new DatagramPacket(raw, raw.length, dp.getAddress(), dp.getPort()));
+        socket.send(new DatagramPacket(
+                PacketEncoder.encode(synAck),
+                PacketEncoder.encode(synAck).length,
+                dp.getAddress(),
+                dp.getPort()
+        ));
 
         System.out.println("Connexion établie");
 
@@ -45,26 +52,34 @@ public class Receiver {
                 break;
             }
 
-            if (p.seq == expectedSeq) {
+            if (p.seq == expectedSeq && bufferQueue.size() < BUFFER_MAX) {
+                bufferQueue.add(p.seq);
                 expectedSeq = (expectedSeq + 1) % 65536;
-                System.out.println("Reçu OK seq=" + p.seq);
+                System.out.println("[RECV] seq=" + p.seq);
             } else {
-                System.out.println("Hors ordre seq=" + p.seq + " attendu=" + expectedSeq);
+                System.out.println("[DROP] seq=" + p.seq + " attendu=" + expectedSeq);
             }
 
-            /* --- ACK cumulatif strict --- */
+            /* --- Consommation simulée --- */
+            if (!bufferQueue.isEmpty()) {
+                bufferQueue.poll();
+            }
+
+            rwnd = BUFFER_MAX - bufferQueue.size();
+
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
             ack.ack = (expectedSeq - 1 + 65536) % 65536;
-            ack.data = new byte[] { RWND_MAX };
+            ack.data = new byte[] { (byte) rwnd };
 
-            byte[] rawAck = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
-                    rawAck,
-                    rawAck.length,
+                    PacketEncoder.encode(ack),
+                    PacketEncoder.encode(ack).length,
                     dpData.getAddress(),
                     dpData.getPort()
             ));
+
+            System.out.println("[SEND ACK] ack=" + ack.ack + " rwnd=" + rwnd);
         }
 
         socket.close();

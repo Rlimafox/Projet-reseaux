@@ -5,7 +5,6 @@ import java.util.*;
 public class Sender {
 
     static final int MAX_DATA = 1024;
-    static final int CWND_MAX = 64;
 
     public static void main(String[] args) throws Exception {
 
@@ -18,16 +17,19 @@ public class Sender {
         InetAddress addr = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
 
-        int seq = new Random().nextInt(65536);
-        int nextSeq = (seq + 1) % 65536;
+        int baseSeq = new Random().nextInt(65536);
+        int nextSeq = (baseSeq + 1) % 65536;
 
         /* ===== TCP-like variables ===== */
         int cwnd = 1;
         int ssthresh = 16;
-        int rwnd = 10;   // valeur initiale supposée
+        int rwnd = 1;
 
         long rto = 1000;
         socket.setSoTimeout((int) rto);
+
+        long lastSendTime = System.currentTimeMillis();
+        long bytesAcked = 0;
 
         Map<Integer, byte[]> inFlight = new TreeMap<>();
         int offset = 0;
@@ -36,12 +38,16 @@ public class Sender {
 
         /* ===== HANDSHAKE ===== */
         Packet syn = new Packet();
-        syn.seq = seq;
+        syn.seq = baseSeq;
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
 
-        byte[] rawSyn = PacketEncoder.encode(syn);
-        socket.send(new DatagramPacket(rawSyn, rawSyn.length, addr, port));
+        socket.send(new DatagramPacket(
+                PacketEncoder.encode(syn),
+                PacketEncoder.encode(syn).length,
+                addr,
+                port
+        ));
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp); // SYN+ACK
@@ -53,7 +59,7 @@ public class Sender {
 
             int win = Math.min(cwnd, rwnd);
 
-            /* --- Envoi --- */
+            /* --- ENVOI --- */
             while (offset < fileData.length && inFlight.size() < win) {
                 int size = Math.min(MAX_DATA, fileData.length - offset);
                 byte[] chunk = Arrays.copyOfRange(fileData, offset, offset + size);
@@ -66,6 +72,7 @@ public class Sender {
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
                 inFlight.put(nextSeq, raw);
+                System.out.println("[SEND] seq=" + nextSeq + " cwnd=" + cwnd + " rwnd=" + rwnd);
 
                 offset += size;
                 nextSeq = (nextSeq + 1) % 65536;
@@ -80,28 +87,47 @@ public class Sender {
                     continue;
 
                 int ackSeq = ack.ack;
-                rwnd = ack.data[0] & 0xFF; // rwnd annoncée
+                rwnd = ack.data[0] & 0xFF;
 
-                /* --- Retirer les paquets ACKés (ACK cumulatif strict) --- */
-                inFlight.keySet().removeIf(s -> (s - ackSeq + 65536) % 65536 <= 0);
+                System.out.println("[ACK] ack=" + ackSeq + " rwnd=" + rwnd);
 
-                /* --- Evolution cwnd --- */
-                if (cwnd < ssthresh) {
-                    cwnd = Math.min(cwnd * 2, CWND_MAX);
-                } else {
-                    cwnd = Math.min(cwnd + 1, CWND_MAX);
+                /* --- Calcul débit approx --- */
+                bytesAcked += MAX_DATA;
+                long now = System.currentTimeMillis();
+                long delta = now - lastSendTime;
+                if (delta > 0) {
+                    long bandwidth = bytesAcked * 1000 / delta; // B/s
+                    int cwndMaxDynamic = Math.max(2, (int)(bandwidth / MAX_DATA));
+                    cwnd = Math.min(cwnd, cwndMaxDynamic);
                 }
 
+                /* --- Retirer ACK cumulatif --- */
+                inFlight.keySet().removeIf(s -> (s - ackSeq + 65536) % 65536 <= 0);
+
+                /* --- AIMD --- */
+                if (cwnd < ssthresh) {
+                    cwnd++;
+                } else {
+                    cwnd += 1;
+                }
+
+                lastSendTime = now;
+
             } catch (SocketTimeoutException e) {
-                System.out.println("TIMEOUT");
+                System.out.println("[TIMEOUT] cwnd=" + cwnd + " → " + Math.max(1, cwnd / 2));
 
                 ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;
 
                 if (!inFlight.isEmpty()) {
                     int s = inFlight.keySet().iterator().next();
-                    byte[] raw = inFlight.get(s);
-                    socket.send(new DatagramPacket(raw, raw.length, addr, port));
+                    socket.send(new DatagramPacket(
+                            inFlight.get(s),
+                            inFlight.get(s).length,
+                            addr,
+                            port
+                    ));
+                    System.out.println("[RETX] seq=" + s);
                 }
             }
         }
@@ -112,8 +138,12 @@ public class Sender {
         fin.flags = Packet.FLAG_FIN;
         fin.data = new byte[0];
 
-        byte[] rawFin = PacketEncoder.encode(fin);
-        socket.send(new DatagramPacket(rawFin, rawFin.length, addr, port));
+        socket.send(new DatagramPacket(
+                PacketEncoder.encode(fin),
+                PacketEncoder.encode(fin).length,
+                addr,
+                port
+        ));
 
         socket.close();
         System.out.println("Transfert terminé");
