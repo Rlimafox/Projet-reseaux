@@ -122,12 +122,11 @@ public class Sender {
                 Iterator<Integer> it = inFlight.keySet().iterator();
                 while (it.hasNext()) {
                     int seq = it.next();
-                    int diff = (ackSeq - seq + SEQ_MOD) % SEQ_MOD;
-                    if (diff < SEQ_MOD / 2) {
+                    if (seq < ackSeq) {
                         it.remove();
-                        removed++;
                     }
                 }
+
 
                 if (dupAckCount == 3) {
                     ssthresh = Math.max(2, cwnd / 2);

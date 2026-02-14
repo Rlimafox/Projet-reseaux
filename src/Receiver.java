@@ -3,7 +3,7 @@ import java.util.*;
 
 public class Receiver {
 
-    static final int BUFFER_MAX = 1024;
+    static final int BUFFER_MAX = 32;
     static final int SEQ_MOD = 65536;
 
     public static void main(String[] args) throws Exception {
@@ -16,8 +16,6 @@ public class Receiver {
         int expectedSeq;
         int bufferUsed = 0;
 
-        TreeMap<Integer, byte[]> outOfOrder = new TreeMap<>();
-
         System.out.println("Receiver en écoute...");
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
@@ -28,8 +26,8 @@ public class Receiver {
         );
 
         Packet synAck = new Packet();
-        synAck.seq = new Random().nextInt(SEQ_MOD);
-        synAck.ack = (syn.seq + 1) % SEQ_MOD;
+        synAck.seq = 0;
+        synAck.ack = syn.seq + 1;
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[]{ (byte) BUFFER_MAX };
 
@@ -39,7 +37,7 @@ public class Receiver {
                 dp.getAddress(),
                 dp.getPort()));
 
-        expectedSeq = (syn.seq + 1) % SEQ_MOD;
+        expectedSeq = syn.seq + 1;
 
         System.out.println("Connexion établie");
 
@@ -53,22 +51,11 @@ public class Receiver {
             );
 
             if (p.seq == expectedSeq) {
-
-                expectedSeq = (expectedSeq + 1) % SEQ_MOD;
-                bufferUsed++;
-
-                while (outOfOrder.containsKey(expectedSeq)) {
-                    outOfOrder.remove(expectedSeq);
-                    expectedSeq = (expectedSeq + 1) % SEQ_MOD;
-                    bufferUsed++;
-                }
-
-            } else if (!outOfOrder.containsKey(p.seq)) {
-                outOfOrder.put(p.seq, p.data);
+                expectedSeq++;
                 bufferUsed++;
             }
 
-            // 🔥 simulation consommation applicative
+            // simulation consommation
             if (bufferUsed > 0)
                 bufferUsed--;
 
@@ -76,7 +63,7 @@ public class Receiver {
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
-            ack.ack = (expectedSeq - 1 + SEQ_MOD) % SEQ_MOD;
+            ack.ack = expectedSeq; // 🔥 PROCHAIN ATTENDU
             ack.data = new byte[]{ (byte) rwnd };
 
             socket.send(new DatagramPacket(
@@ -84,6 +71,8 @@ public class Receiver {
                     PacketEncoder.encode(ack).length,
                     dpData.getAddress(),
                     dpData.getPort()));
+
+            System.out.println("ACK envoyé | ack=" + ack.ack + " | rwnd=" + rwnd);
         }
     }
 }
