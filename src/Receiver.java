@@ -13,7 +13,6 @@ public class Receiver {
         int expectedSeq;
         int rwnd = BUFFER_MAX;
 
-        // Buffer hors ordre
         TreeMap<Integer, byte[]> outOfOrder = new TreeMap<>();
 
         System.out.println("Receiver en écoute...");
@@ -23,32 +22,26 @@ public class Receiver {
         socket.receive(dp);
         Packet syn = PacketEncoder.decode(dp.getData());
 
-        // seq attendu = seq du SYN + 1
-        expectedSeq = (syn.seq + 1) % 65536;
-
         Packet synAck = new Packet();
-        synAck.seq = new Random().nextInt(65536); // sequence du receiver
-        synAck.ack = expectedSeq; // ACK du SYN du sender
+        synAck.seq = new Random().nextInt(65536); // seq du receiver
+        synAck.ack = (syn.seq + 1) % 65536;      // ACK du SYN
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[]{ (byte) rwnd };
 
         byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(synAckRaw, synAckRaw.length, dp.getAddress(), dp.getPort()));
 
-        // Après handshake, expectedSeq = prochain seq que le sender enverra
-        expectedSeq = synAck.ack;
-        System.out.println("Connexion établie");
+        // === Premier paquet de données attendu ===
+        expectedSeq = synAck.ack; // le sender enverra ce seq comme premier paquet de données
 
-        // ===== RÉCEPTION =====
+        System.out.println("Connexion établie, expectedSeq=" + expectedSeq);
+
         while (true) {
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
             Packet p = PacketEncoder.decode(dpData.getData());
 
-            if ((p.flags & Packet.FLAG_FIN) != 0) {
-                System.out.println("FIN reçu, fermeture");
-                break;
-            }
+            if ((p.flags & Packet.FLAG_FIN) != 0) break;
 
             if (p.seq == expectedSeq) {
                 expectedSeq = (expectedSeq + 1) % 65536;
@@ -57,23 +50,20 @@ public class Receiver {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % 65536;
                 }
-                System.out.println("[IN ORDER] seq=" + p.seq);
 
+                System.out.println("[IN ORDER] seq=" + p.seq);
             } else if (!outOfOrder.containsKey(p.seq) && outOfOrder.size() < BUFFER_MAX) {
                 outOfOrder.put(p.seq, p.data);
                 System.out.println("[BUFFERED] seq=" + p.seq);
-
             } else {
                 System.out.println("[DROP] seq=" + p.seq);
             }
 
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // ACK cumulatif
-            int ackSeq = (expectedSeq - 1 + 65536) % 65536;
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
-            ack.ack = ackSeq;
+            ack.ack = (expectedSeq - 1 + 65536) % 65536;
             ack.data = new byte[]{ (byte) rwnd };
 
             byte[] ackRaw = PacketEncoder.encode(ack);

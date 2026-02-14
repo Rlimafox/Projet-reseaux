@@ -7,24 +7,17 @@ public class Sender {
     static final int MAX_DATA = 1024;
 
     public static void main(String[] args) throws Exception {
-
         String ip = args[0];
         int port = Integer.parseInt(args[1]);
         String filename = args[2];
 
         byte[] fileData = Files.readAllBytes(Path.of(filename));
-
         InetAddress addr = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
         socket.setSoTimeout(500);
 
-        int cwnd = 1;
-        int ssthresh = 32;
-        int rwnd = 32;
-
-        int lastAck = -1;
-        int dupAckCount = 0;
-
+        int cwnd = 1, ssthresh = 32, rwnd = 32;
+        int lastAck = -1, dupAckCount = 0;
         TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
         int offset = 0;
         byte[] buffer = new byte[2048];
@@ -44,13 +37,11 @@ public class Sender {
 
         // Premier seq de données = ACK du receiver
         int nextSeq = synAck.ack;
-        baseSeq = nextSeq - 1;
 
-        System.out.println("Connexion établie");
+        System.out.println("Connexion établie, first data seq=" + nextSeq);
 
         // ===== TRANSMISSION =====
         while (offset < fileData.length || !inFlight.isEmpty()) {
-
             int win = Math.min(cwnd, rwnd);
 
             while (offset < fileData.length && inFlight.size() < win) {
@@ -77,27 +68,20 @@ public class Sender {
                 Packet ack = PacketEncoder.decode(dpAck.getData());
 
                 if ((ack.flags & Packet.FLAG_ACK) == 0) continue;
-
                 int ackSeq = ack.ack;
                 rwnd = ack.data[0] & 0xFF;
 
-                if (ackSeq == lastAck) dupAckCount++;
-                else dupAckCount = 0;
+                if (ackSeq == lastAck) dupAckCount++; else dupAckCount = 0;
                 lastAck = ackSeq;
 
-                // Fast retransmit
-                if (dupAckCount == 3) {
+                if (dupAckCount == 3) { // fast retransmit
                     ssthresh = Math.max(2, cwnd / 2);
                     cwnd = ssthresh;
-
                     int missing = (ackSeq + 1) % 65536;
-                    if (inFlight.containsKey(missing)) {
-                        socket.send(new DatagramPacket(inFlight.get(missing), inFlight.get(missing).length, addr, port));
-                        System.out.println("[FAST RETRANSMIT] seq=" + missing);
-                    }
+                    if (inFlight.containsKey(missing)) socket.send(new DatagramPacket(inFlight.get(missing), inFlight.get(missing).length, addr, port));
                 }
 
-                // Suppression cumulative sécurisée
+                // suppression cumulative modulo 65536
                 List<Integer> toRemove = new ArrayList<>();
                 for (int s : inFlight.keySet()) {
                     int diff = (ackSeq - s + 65536) % 65536;
@@ -105,10 +89,7 @@ public class Sender {
                 }
                 for (int s : toRemove) inFlight.remove(s);
 
-                if (!toRemove.isEmpty()) {
-                    if (cwnd < ssthresh) cwnd *= 2;
-                    else cwnd += 1;
-                }
+                if (!toRemove.isEmpty()) cwnd = (cwnd < ssthresh) ? cwnd * 2 : cwnd + 1;
 
             } catch (SocketTimeoutException e) {
                 ssthresh = Math.max(2, cwnd / 2);
