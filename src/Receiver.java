@@ -3,7 +3,7 @@ import java.util.*;
 
 public class Receiver {
 
-    static final int BUFFER_MAX = 32;
+    static final int BUFFER_MAX = 1024;
     static final int SEQ_MOD = 65536;
 
     public static void main(String[] args) throws Exception {
@@ -41,7 +41,7 @@ public class Receiver {
 
         expectedSeq = (syn.seq + 1) % SEQ_MOD;
 
-        System.out.println("Connexion établie, expectedSeq=" + expectedSeq);
+        System.out.println("Connexion établie");
 
         while (true) {
 
@@ -52,26 +52,28 @@ public class Receiver {
 
             if (p.seq == expectedSeq) {
 
-                System.out.println("[IN ORDER] seq=" + p.seq);
-
                 expectedSeq = (expectedSeq + 1) % SEQ_MOD;
+
+                // Simule consommation buffer
+                rwnd = Math.max(0, rwnd - 1);
 
                 while (outOfOrder.containsKey(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % SEQ_MOD;
+                    rwnd = Math.max(0, rwnd - 1);
                 }
+
+                System.out.println("[IN ORDER] seq=" + p.seq);
 
             } else if (!outOfOrder.containsKey(p.seq)
                     && outOfOrder.size() < BUFFER_MAX) {
 
                 outOfOrder.put(p.seq, p.data);
                 System.out.println("[BUFFERED] seq=" + p.seq);
-
-            } else {
-                System.out.println("[DROP] seq=" + p.seq);
             }
 
-            rwnd = BUFFER_MAX - outOfOrder.size();
+            // Simule vidage progressif du buffer
+            rwnd = Math.min(BUFFER_MAX, rwnd + 2);
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
