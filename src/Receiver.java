@@ -55,33 +55,42 @@ public class Receiver {
                 break;
             }
 
+            /* ===== IN-ORDER PACKET ===== */
             if (p.seq == expectedSeq) {
-
-                expectedSeq = (expectedSeq + 1) % 65536;
-
-                // Vérifie si les suivants sont déjà bufferisés
-                while (outOfOrder.contains(expectedSeq)) {
-                    outOfOrder.remove(expectedSeq);
-                    expectedSeq = (expectedSeq + 1) % 65536;
-                }
 
                 System.out.println("[IN ORDER] seq=" + p.seq);
 
-            } else if (!outOfOrder.contains(p.seq)
+                // avance la fenêtre
+                expectedSeq = (expectedSeq + 1) % 65536;
+
+                // Drain les paquets hors ordre consécutifs
+                while (outOfOrder.contains(expectedSeq)) {
+                    outOfOrder.remove(expectedSeq);
+                    System.out.println("[DRAIN BUFFER] seq=" + expectedSeq);
+                    expectedSeq = (expectedSeq + 1) % 65536;
+                }
+
+            }
+            /* ===== FUTURE PACKET ===== */
+            else if (!outOfOrder.contains(p.seq)
                     && outOfOrder.size() < BUFFER_MAX) {
 
                 outOfOrder.add(p.seq);
                 System.out.println("[BUFFERED] seq=" + p.seq);
 
-            } else {
+            }
+            /* ===== DUPLICATE / DROP ===== */
+            else {
                 System.out.println("[DROP] seq=" + p.seq);
             }
 
+            // mise à jour rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
+            // ACK cumulatif
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
-            ack.ack = (expectedSeq - 1 + 65536) % 65536;
+            ack.ack = expectedSeq;
             ack.data = new byte[] { (byte) rwnd };
 
             socket.send(new DatagramPacket(
