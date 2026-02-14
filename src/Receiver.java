@@ -42,6 +42,7 @@ public class Receiver {
 
         /* ===== RÉCEPTION ===== */
         while (true) {
+
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
 
@@ -57,16 +58,15 @@ public class Receiver {
                 expectedSeq = (expectedSeq + 1) % 65536;
                 System.out.println("[RECV] seq=" + p.seq);
             } else {
-                System.out.println("[DROP] seq=" + p.seq + " attendu=" + expectedSeq);
+                System.out.println("[DROP] seq=" + p.seq +
+                        " attendu=" + expectedSeq);
             }
 
-            /* --- Consommation simulée --- */
-            /* --- Consommation simulée lente mais continue --- */
+            /* Consommation progressive */
             if (!bufferQueue.isEmpty()) {
-                Thread.sleep(50);   // simule traitement
+                Thread.sleep(50);
                 bufferQueue.poll();
             }
-
 
             rwnd = BUFFER_MAX - bufferQueue.size();
 
@@ -82,7 +82,8 @@ public class Receiver {
                     dpData.getPort()
             ));
 
-            System.out.println("[SEND ACK] ack=" + ack.ack + " rwnd=" + rwnd);
+            System.out.println("[SEND ACK] ack=" + ack.ack +
+                    " rwnd=" + rwnd);
         }
 
         socket.close();

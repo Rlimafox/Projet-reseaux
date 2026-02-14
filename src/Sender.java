@@ -20,22 +20,16 @@ public class Sender {
         int baseSeq = new Random().nextInt(65536);
         int nextSeq = (baseSeq + 1) % 65536;
 
-        /* ===== Congestion control dynamique ===== */
-        double estimatedRTT = 100;      // ms
-        double estimatedBandwidth = 0;  // bytes/ms
-        double ALPHA = 0.125;
-        double BETA = 0.25;
-
+        /* ===== TCP Reno ===== */
         int cwnd = 1;
-        int rwnd = 1;
+        int ssthresh = 32;
+        int rwnd = 32;
 
-        long rto = 1000;
-        socket.setSoTimeout((int) rto);
+        socket.setSoTimeout(1000);
 
-        Map<Integer, Long> sendTimes = new HashMap<>();
         Map<Integer, byte[]> inFlight = new TreeMap<>();
-
         int offset = 0;
+
         byte[] buffer = new byte[2048];
 
         /* ===== HANDSHAKE ===== */
@@ -55,11 +49,9 @@ public class Sender {
         /* ===== TRANSFERT ===== */
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
-            int win = Math.min(cwnd, Math.max(rwnd, 1));
-
+            /* ===== Zero Window Probe ===== */
             if (rwnd == 0) {
                 System.out.println("[ZERO WINDOW] probing...");
-
                 if (!inFlight.isEmpty()) {
                     int s = inFlight.keySet().iterator().next();
                     socket.send(new DatagramPacket(
@@ -69,12 +61,13 @@ public class Sender {
                             port
                     ));
                 }
-
-                Thread.sleep(500);
+                Thread.sleep(300);
                 continue;
             }
 
-            /* --- ENVOI --- */
+            int win = Math.min(cwnd, rwnd);
+
+            /* ===== ENVOI ===== */
             while (offset < fileData.length && inFlight.size() < win) {
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
@@ -87,58 +80,60 @@ public class Sender {
                 byte[] raw = PacketEncoder.encode(p);
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
-                sendTimes.put(nextSeq, System.currentTimeMillis());
                 inFlight.put(nextSeq, raw);
 
-                System.out.println("[SEND] seq=" + nextSeq + " cwnd=" + cwnd);
+                System.out.println("[SEND] seq=" + nextSeq +
+                        " cwnd=" + cwnd +
+                        " ssthresh=" + ssthresh +
+                        " rwnd=" + rwnd);
 
                 offset += size;
                 nextSeq = (nextSeq + 1) % 65536;
             }
 
             try {
-
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
 
-                long now = System.currentTimeMillis();
-
                 Packet ack = PacketEncoder.decode(dpAck.getData());
+
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
 
                 int ackSeq = ack.ack;
                 rwnd = ack.data[0] & 0xFF;
 
-                System.out.println("[ACK] ack=" + ackSeq + " rwnd=" + rwnd);
+                boolean newAck = false;
 
-                /* === RTT estimation === */
-                if (sendTimes.containsKey(ackSeq)) {
-                    long sampleRTT = now - sendTimes.get(ackSeq);
-                    estimatedRTT = (1 - ALPHA) * estimatedRTT + ALPHA * sampleRTT;
-
-                    double sampleBandwidth = MAX_DATA / (double) sampleRTT;
-                    estimatedBandwidth =
-                            (1 - BETA) * estimatedBandwidth + BETA * sampleBandwidth;
+                if (inFlight.containsKey(ackSeq)) {
+                    newAck = true;
                 }
 
-                /* === Retrait ACK cumulatif === */
                 inFlight.keySet().removeIf(s ->
                         (s - ackSeq + 65536) % 65536 <= 0);
 
-                sendTimes.keySet().removeIf(s ->
-                        (s - ackSeq + 65536) % 65536 <= 0);
+                System.out.println("[ACK] ack=" + ackSeq +
+                        " cwnd=" + cwnd +
+                        " rwnd=" + rwnd);
 
-                /* === Nouvelle cwnd dynamique (BDP) === */
-                double newCwnd = (estimatedBandwidth * estimatedRTT) / MAX_DATA;
+                /* ===== TCP Reno ===== */
+                if (newAck) {
 
-                cwnd = Math.max(1, (int) newCwnd);
+                    if (cwnd < ssthresh) {
+                        // Slow Start (exponentiel)
+                        cwnd *= 2;
+                    } else {
+                        // Congestion Avoidance (linéaire)
+                        cwnd += 1;
+                    }
+                }
 
             } catch (SocketTimeoutException e) {
 
-                System.out.println("[TIMEOUT] réduction cwnd");
+                System.out.println("[TIMEOUT] cwnd=" + cwnd);
 
-                cwnd = Math.max(1, cwnd / 2);
+                ssthresh = Math.max(2, cwnd / 2);
+                cwnd = 1;
 
                 if (!inFlight.isEmpty()) {
                     int s = inFlight.keySet().iterator().next();
