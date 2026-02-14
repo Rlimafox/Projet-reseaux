@@ -55,39 +55,37 @@ public class Receiver {
                 break;
             }
 
-            /* ===== IN-ORDER PACKET ===== */
-            if (p.seq == expectedSeq) {
+            /* ===== DUPLICATE / OLD ===== */
+            if (p.seq < expectedSeq || outOfOrder.contains(p.seq)) {
+                System.out.println("[DROP] seq=" + p.seq);
+            }
+            /* ===== IN ORDER ===== */
+            else if (p.seq == expectedSeq) {
 
                 System.out.println("[IN ORDER] seq=" + p.seq);
-
-                // avance la fenêtre
                 expectedSeq = (expectedSeq + 1) % 65536;
 
-                // Drain les paquets hors ordre consécutifs
+                // Drain les paquets consécutifs déjà bufferés
                 while (outOfOrder.contains(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     System.out.println("[DRAIN BUFFER] seq=" + expectedSeq);
                     expectedSeq = (expectedSeq + 1) % 65536;
                 }
-
             }
-            /* ===== FUTURE PACKET ===== */
-            else if (!outOfOrder.contains(p.seq)
-                    && outOfOrder.size() < BUFFER_MAX) {
-
-                outOfOrder.add(p.seq);
-                System.out.println("[BUFFERED] seq=" + p.seq);
-
-            }
-            /* ===== DUPLICATE / DROP ===== */
+            /* ===== FUTURE ===== */
             else {
-                System.out.println("[DROP] seq=" + p.seq);
+                if (outOfOrder.size() < BUFFER_MAX) {
+                    outOfOrder.add(p.seq);
+                    System.out.println("[BUFFERED] seq=" + p.seq);
+                } else {
+                    System.out.println("[DROP WINDOW FULL] seq=" + p.seq);
+                }
             }
 
             // mise à jour rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // ACK cumulatif
+            // ACK cumulatif = expectedSeq
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
             ack.ack = expectedSeq;
