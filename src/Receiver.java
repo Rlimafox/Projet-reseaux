@@ -6,7 +6,6 @@ public class Receiver {
     static final int BUFFER_MAX = 32;
 
     public static void main(String[] args) throws Exception {
-
         int port = Integer.parseInt(args[0]);
         DatagramSocket socket = new DatagramSocket(port);
 
@@ -14,7 +13,6 @@ public class Receiver {
         int expectedSeq;
         int rwnd = BUFFER_MAX;
 
-        // Buffer pour paquets hors ordre
         TreeSet<Integer> outOfOrder = new TreeSet<>();
 
         System.out.println("Receiver en écoute...");
@@ -29,8 +27,8 @@ public class Receiver {
         Packet synAck = new Packet();
         synAck.seq = new Random().nextInt(65536);
         synAck.ack = expectedSeq;
-        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
-        synAck.data = new byte[] { (byte) rwnd };
+        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.data = new byte[]{ (byte) rwnd };
 
         byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(
@@ -44,7 +42,6 @@ public class Receiver {
 
         /* ===== RÉCEPTION ===== */
         while (true) {
-
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
             Packet p = PacketEncoder.decode(dpData.getData());
@@ -55,40 +52,33 @@ public class Receiver {
                 break;
             }
 
-            // Paquet attendu
             if (p.seq == expectedSeq) {
-
                 expectedSeq = (expectedSeq + 1) % 65536;
 
-                // Drainer le buffer pour tous les paquets consécutifs déjà reçus
-                while (outOfOrder.remove(expectedSeq)) {
+                // retirer tous les paquets consécutifs déjà bufferisés
+                while (outOfOrder.contains(expectedSeq)) {
+                    outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % 65536;
                 }
 
                 System.out.println("[IN ORDER] seq=" + p.seq);
 
-            }
-            // Paquet hors ordre
-            else if (!outOfOrder.contains(p.seq) && outOfOrder.size() < BUFFER_MAX) {
-
+            } else if (!outOfOrder.contains(p.seq) && outOfOrder.size() < BUFFER_MAX) {
                 outOfOrder.add(p.seq);
                 System.out.println("[BUFFERED] seq=" + p.seq);
 
-            }
-            // Paquet doublon ou buffer plein
-            else {
+            } else {
                 System.out.println("[DROP] seq=" + p.seq);
             }
 
-            // Mise à jour de rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // Envoi de l'ACK cumulatif correct
+            // envoyer ACK cumulatif correct
             int ackSeq = (expectedSeq - 1 + 65536) % 65536;
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
             ack.ack = ackSeq;
-            ack.data = new byte[] { (byte) rwnd };
+            ack.data = new byte[]{ (byte) rwnd };
 
             byte[] ackRaw = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
