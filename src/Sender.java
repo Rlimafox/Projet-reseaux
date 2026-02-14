@@ -20,20 +20,22 @@ public class Sender {
         int baseSeq = new Random().nextInt(65536);
         int nextSeq = (baseSeq + 1) % 65536;
 
-        /* ===== TCP-like variables ===== */
+        /* ===== Congestion control dynamique ===== */
+        double estimatedRTT = 100;      // ms
+        double estimatedBandwidth = 0;  // bytes/ms
+        double ALPHA = 0.125;
+        double BETA = 0.25;
+
         int cwnd = 1;
-        int ssthresh = 16;
         int rwnd = 1;
 
         long rto = 1000;
         socket.setSoTimeout((int) rto);
 
-        long lastSendTime = System.currentTimeMillis();
-        long bytesAcked = 0;
-
+        Map<Integer, Long> sendTimes = new HashMap<>();
         Map<Integer, byte[]> inFlight = new TreeMap<>();
-        int offset = 0;
 
+        int offset = 0;
         byte[] buffer = new byte[2048];
 
         /* ===== HANDSHAKE ===== */
@@ -42,15 +44,11 @@ public class Sender {
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
 
-        socket.send(new DatagramPacket(
-                PacketEncoder.encode(syn),
-                PacketEncoder.encode(syn).length,
-                addr,
-                port
-        ));
+        byte[] synRaw = PacketEncoder.encode(syn);
+        socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
-        socket.receive(dp); // SYN+ACK
+        socket.receive(dp);
 
         System.out.println("Connexion établie");
 
@@ -61,6 +59,7 @@ public class Sender {
 
             /* --- ENVOI --- */
             while (offset < fileData.length && inFlight.size() < win) {
+
                 int size = Math.min(MAX_DATA, fileData.length - offset);
                 byte[] chunk = Arrays.copyOfRange(fileData, offset, offset + size);
 
@@ -71,16 +70,21 @@ public class Sender {
                 byte[] raw = PacketEncoder.encode(p);
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
+                sendTimes.put(nextSeq, System.currentTimeMillis());
                 inFlight.put(nextSeq, raw);
-                System.out.println("[SEND] seq=" + nextSeq + " cwnd=" + cwnd + " rwnd=" + rwnd);
+
+                System.out.println("[SEND] seq=" + nextSeq + " cwnd=" + cwnd);
 
                 offset += size;
                 nextSeq = (nextSeq + 1) % 65536;
             }
 
             try {
+
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
+
+                long now = System.currentTimeMillis();
 
                 Packet ack = PacketEncoder.decode(dpAck.getData());
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
@@ -91,33 +95,33 @@ public class Sender {
 
                 System.out.println("[ACK] ack=" + ackSeq + " rwnd=" + rwnd);
 
-                /* --- Calcul débit approx --- */
-                bytesAcked += MAX_DATA;
-                long now = System.currentTimeMillis();
-                long delta = now - lastSendTime;
-                if (delta > 0) {
-                    long bandwidth = bytesAcked * 1000 / delta; // B/s
-                    int cwndMaxDynamic = Math.max(2, (int)(bandwidth / MAX_DATA));
-                    cwnd = Math.min(cwnd, cwndMaxDynamic);
+                /* === RTT estimation === */
+                if (sendTimes.containsKey(ackSeq)) {
+                    long sampleRTT = now - sendTimes.get(ackSeq);
+                    estimatedRTT = (1 - ALPHA) * estimatedRTT + ALPHA * sampleRTT;
+
+                    double sampleBandwidth = MAX_DATA / (double) sampleRTT;
+                    estimatedBandwidth =
+                            (1 - BETA) * estimatedBandwidth + BETA * sampleBandwidth;
                 }
 
-                /* --- Retirer ACK cumulatif --- */
-                inFlight.keySet().removeIf(s -> (s - ackSeq + 65536) % 65536 <= 0);
+                /* === Retrait ACK cumulatif === */
+                inFlight.keySet().removeIf(s ->
+                        (s - ackSeq + 65536) % 65536 <= 0);
 
-                /* --- AIMD --- */
-                if (cwnd < ssthresh) {
-                    cwnd++;
-                } else {
-                    cwnd += 1;
-                }
+                sendTimes.keySet().removeIf(s ->
+                        (s - ackSeq + 65536) % 65536 <= 0);
 
-                lastSendTime = now;
+                /* === Nouvelle cwnd dynamique (BDP) === */
+                double newCwnd = (estimatedBandwidth * estimatedRTT) / MAX_DATA;
+
+                cwnd = Math.max(1, (int) newCwnd);
 
             } catch (SocketTimeoutException e) {
-                System.out.println("[TIMEOUT] cwnd=" + cwnd + " → " + Math.max(1, cwnd / 2));
 
-                ssthresh = Math.max(2, cwnd / 2);
-                cwnd = 1;
+                System.out.println("[TIMEOUT] réduction cwnd");
+
+                cwnd = Math.max(1, cwnd / 2);
 
                 if (!inFlight.isEmpty()) {
                     int s = inFlight.keySet().iterator().next();
@@ -138,12 +142,8 @@ public class Sender {
         fin.flags = Packet.FLAG_FIN;
         fin.data = new byte[0];
 
-        socket.send(new DatagramPacket(
-                PacketEncoder.encode(fin),
-                PacketEncoder.encode(fin).length,
-                addr,
-                port
-        ));
+        byte[] finRaw = PacketEncoder.encode(fin);
+        socket.send(new DatagramPacket(finRaw, finRaw.length, addr, port));
 
         socket.close();
         System.out.println("Transfert terminé");

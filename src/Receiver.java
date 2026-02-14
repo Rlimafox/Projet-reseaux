@@ -61,7 +61,7 @@ public class Receiver {
             }
 
             /* --- Consommation simulée --- */
-            if (!bufferQueue.isEmpty()) {
+            if (bufferQueue.size() > BUFFER_MAX / 2) {
                 bufferQueue.poll();
             }
 
