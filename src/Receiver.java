@@ -20,6 +20,7 @@ public class Receiver {
 
         System.out.println("Receiver en écoute...");
 
+        // ===== HANDSHAKE =====
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
 
@@ -44,6 +45,7 @@ public class Receiver {
 
         System.out.println("Connexion établie");
 
+        // ===== RECEPTION =====
         while (true) {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
@@ -62,13 +64,12 @@ public class Receiver {
                     expectedSeq = (expectedSeq + 1) % SEQ_MOD;
                 }
 
-            } else if (!outOfOrder.containsKey(p.seq)
-                    && outOfOrder.size() < BUFFER_MAX) {
-
+            } else if (!outOfOrder.containsKey(p.seq)) {
                 outOfOrder.put(p.seq, p.data);
             }
 
-            rwnd = BUFFER_MAX - outOfOrder.size();
+            // ✅ IMPORTANT : on annonce toujours un buffer libre
+            rwnd = BUFFER_MAX;
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
