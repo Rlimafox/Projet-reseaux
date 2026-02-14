@@ -48,15 +48,15 @@ public class Sender {
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
 
-        socket.send(new DatagramPacket(
-                PacketEncoder.encode(syn),
-                PacketEncoder.encode(syn).length,
-                addr,
-                port));
+        byte[] synRaw = PacketEncoder.encode(syn);
+        socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
-        Packet synAck = PacketEncoder.decode(dp.getData());
+
+        Packet synAck = PacketEncoder.decode(
+                Arrays.copyOf(dp.getData(), dp.getLength())
+        );
 
         int nextSeq = (baseSeq + 1) % SEQ_MOD;
         int offset = 0;
@@ -82,8 +82,6 @@ public class Sender {
 
                 inFlight.put(nextSeq, raw);
 
-                System.out.println("[SEND] seq=" + nextSeq);
-
                 offset += size;
                 nextSeq = (nextSeq + 1) % SEQ_MOD;
             }
@@ -91,7 +89,10 @@ public class Sender {
             try {
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
-                Packet ack = PacketEncoder.decode(dpAck.getData());
+
+                Packet ack = PacketEncoder.decode(
+                        Arrays.copyOf(dpAck.getData(), dpAck.getLength())
+                );
 
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
@@ -106,45 +107,35 @@ public class Sender {
 
                 lastAck = ackSeq;
 
-                // ===== SUPPRESSION CUMULATIVE + comptage =====
                 int removed = 0;
 
                 Iterator<Integer> it = inFlight.keySet().iterator();
                 while (it.hasNext()) {
                     int seq = it.next();
                     int diff = (ackSeq - seq + SEQ_MOD) % SEQ_MOD;
-
                     if (diff < SEQ_MOD / 2) {
                         it.remove();
                         removed++;
                     }
                 }
 
-                // ===== CONGESTION CONTROL CORRECT =====
                 if (dupAckCount == 3) {
                     ssthresh = Math.max(2, cwnd / 2);
                     cwnd = ssthresh;
                     printWindow("FAST_RETRANSMIT", cwnd, ssthresh, rwnd, inFlight.size());
                 }
                 else if (removed > 0) {
-
-                    if (cwnd < ssthresh) {
-                        // Slow start
+                    if (cwnd < ssthresh)
                         cwnd += removed;
-                    } else {
-                        // Congestion avoidance
-                        cwnd += Math.max(1, removed / cwnd);
-                    }
+                    else
+                        cwnd += 1;
 
-                    // éviter explosion infinie
                     cwnd = Math.min(cwnd, 5000);
 
                     printWindow("ACK x" + removed, cwnd, ssthresh, rwnd, inFlight.size());
                 }
 
             } catch (SocketTimeoutException e) {
-
-                System.out.println("[TIMEOUT]");
 
                 ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;

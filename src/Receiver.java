@@ -20,11 +20,12 @@ public class Receiver {
 
         System.out.println("Receiver en écoute...");
 
-        // ===== HANDSHAKE =====
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
 
-        Packet syn = PacketEncoder.decode(dp.getData());
+        Packet syn = PacketEncoder.decode(
+                Arrays.copyOf(dp.getData(), dp.getLength())
+        );
 
         Packet synAck = new Packet();
         synAck.seq = new Random().nextInt(SEQ_MOD);
@@ -32,9 +33,10 @@ public class Receiver {
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[]{ (byte) rwnd };
 
+        byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(
-                PacketEncoder.encode(synAck),
-                PacketEncoder.encode(synAck).length,
+                synAckRaw,
+                synAckRaw.length,
                 dp.getAddress(),
                 dp.getPort()));
 
@@ -46,7 +48,10 @@ public class Receiver {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
-            Packet p = PacketEncoder.decode(dpData.getData());
+
+            Packet p = PacketEncoder.decode(
+                    Arrays.copyOf(dpData.getData(), dpData.getLength())
+            );
 
             if (p.seq == expectedSeq) {
 
@@ -57,13 +62,10 @@ public class Receiver {
                     expectedSeq = (expectedSeq + 1) % SEQ_MOD;
                 }
 
-                System.out.println("[IN ORDER] seq=" + p.seq);
-            }
-            else if (!outOfOrder.containsKey(p.seq)
+            } else if (!outOfOrder.containsKey(p.seq)
                     && outOfOrder.size() < BUFFER_MAX) {
 
                 outOfOrder.put(p.seq, p.data);
-                System.out.println("[BUFFERED] seq=" + p.seq);
             }
 
             rwnd = BUFFER_MAX - outOfOrder.size();
@@ -73,13 +75,12 @@ public class Receiver {
             ack.ack = (expectedSeq - 1 + SEQ_MOD) % SEQ_MOD;
             ack.data = new byte[]{ (byte) rwnd };
 
+            byte[] ackRaw = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
-                    PacketEncoder.encode(ack),
-                    PacketEncoder.encode(ack).length,
+                    ackRaw,
+                    ackRaw.length,
                     dpData.getAddress(),
                     dpData.getPort()));
-
-            System.out.println("[ACK] " + ack.ack + " rwnd=" + rwnd);
         }
     }
 }
