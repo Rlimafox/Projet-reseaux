@@ -17,7 +17,7 @@ public class Receiver {
 
         System.out.println("Receiver en écoute...");
 
-        /* ===== HANDSHAKE ===== */
+        // ===== HANDSHAKE =====
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
         Packet syn = PacketEncoder.decode(dp.getData());
@@ -31,16 +31,10 @@ public class Receiver {
         synAck.data = new byte[]{ (byte) rwnd };
 
         byte[] synAckRaw = PacketEncoder.encode(synAck);
-        socket.send(new DatagramPacket(
-                synAckRaw,
-                synAckRaw.length,
-                dp.getAddress(),
-                dp.getPort()
-        ));
-
+        socket.send(new DatagramPacket(synAckRaw, synAckRaw.length, dp.getAddress(), dp.getPort()));
         System.out.println("Connexion établie");
 
-        /* ===== RÉCEPTION ===== */
+        // ===== RÉCEPTION =====
         while (true) {
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
@@ -55,12 +49,11 @@ public class Receiver {
             if (p.seq == expectedSeq) {
                 expectedSeq = (expectedSeq + 1) % 65536;
 
-                // retirer tous les paquets consécutifs déjà bufferisés
+                // Drainer le buffer pour tous les paquets consécutifs déjà reçus
                 while (outOfOrder.contains(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % 65536;
                 }
-
                 System.out.println("[IN ORDER] seq=" + p.seq);
 
             } else if (!outOfOrder.contains(p.seq) && outOfOrder.size() < BUFFER_MAX) {
@@ -71,9 +64,10 @@ public class Receiver {
                 System.out.println("[DROP] seq=" + p.seq);
             }
 
+            // Mise à jour de rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // envoyer ACK cumulatif correct
+            // ACK cumulatif pour le dernier paquet en ordre
             int ackSeq = (expectedSeq - 1 + 65536) % 65536;
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
@@ -81,13 +75,7 @@ public class Receiver {
             ack.data = new byte[]{ (byte) rwnd };
 
             byte[] ackRaw = PacketEncoder.encode(ack);
-            socket.send(new DatagramPacket(
-                    ackRaw,
-                    ackRaw.length,
-                    dpData.getAddress(),
-                    dpData.getPort()
-            ));
-
+            socket.send(new DatagramPacket(ackRaw, ackRaw.length, dpData.getAddress(), dpData.getPort()));
             System.out.println("[ACK SENT] ack=" + ack.ack + " rwnd=" + rwnd);
         }
 
