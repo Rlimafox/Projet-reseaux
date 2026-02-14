@@ -63,10 +63,20 @@ public class Sender {
 
         System.out.println("Connexion établie");
 
-        // ===== TRANSMISSION =====
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
             int window = Math.min(cwnd, rwnd);
+
+            // 🔥 SI rwnd=0 → envoyer un probe
+            if (rwnd == 0 && !inFlight.isEmpty()) {
+                int first = inFlight.firstKey();
+                socket.send(new DatagramPacket(
+                        inFlight.get(first),
+                        inFlight.get(first).length,
+                        addr,
+                        port));
+                System.out.println("[PROBE] seq=" + first);
+            }
 
             while (offset < fileData.length && inFlight.size() < window) {
 
@@ -122,18 +132,15 @@ public class Sender {
                 if (dupAckCount == 3) {
                     ssthresh = Math.max(2, cwnd / 2);
                     cwnd = ssthresh;
-                    printWindow("FAST_RETRANSMIT", cwnd, ssthresh, rwnd, inFlight.size());
                 }
                 else if (removed > 0) {
                     if (cwnd < ssthresh)
                         cwnd += removed;
                     else
                         cwnd += 1;
-
-                    cwnd = Math.min(cwnd, 5000);
-
-                    printWindow("ACK x" + removed, cwnd, ssthresh, rwnd, inFlight.size());
                 }
+
+                printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
 
             } catch (SocketTimeoutException e) {
 

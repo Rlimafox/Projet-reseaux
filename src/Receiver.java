@@ -14,13 +14,12 @@ public class Receiver {
         byte[] buffer = new byte[2048];
 
         int expectedSeq;
-        int rwnd = BUFFER_MAX;
+        int bufferUsed = 0;
 
         TreeMap<Integer, byte[]> outOfOrder = new TreeMap<>();
 
         System.out.println("Receiver en écoute...");
 
-        // ===== HANDSHAKE =====
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
 
@@ -32,12 +31,11 @@ public class Receiver {
         synAck.seq = new Random().nextInt(SEQ_MOD);
         synAck.ack = (syn.seq + 1) % SEQ_MOD;
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
-        synAck.data = new byte[]{ (byte) rwnd };
+        synAck.data = new byte[]{ (byte) BUFFER_MAX };
 
-        byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(
-                synAckRaw,
-                synAckRaw.length,
+                PacketEncoder.encode(synAck),
+                PacketEncoder.encode(synAck).length,
                 dp.getAddress(),
                 dp.getPort()));
 
@@ -45,7 +43,6 @@ public class Receiver {
 
         System.out.println("Connexion établie");
 
-        // ===== RECEPTION =====
         while (true) {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
@@ -58,28 +55,33 @@ public class Receiver {
             if (p.seq == expectedSeq) {
 
                 expectedSeq = (expectedSeq + 1) % SEQ_MOD;
+                bufferUsed++;
 
                 while (outOfOrder.containsKey(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % SEQ_MOD;
+                    bufferUsed++;
                 }
 
             } else if (!outOfOrder.containsKey(p.seq)) {
                 outOfOrder.put(p.seq, p.data);
+                bufferUsed++;
             }
 
-            // ✅ IMPORTANT : on annonce toujours un buffer libre
-            rwnd = BUFFER_MAX;
+            // 🔥 simulation consommation applicative
+            if (bufferUsed > 0)
+                bufferUsed--;
+
+            int rwnd = BUFFER_MAX - bufferUsed;
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
             ack.ack = (expectedSeq - 1 + SEQ_MOD) % SEQ_MOD;
             ack.data = new byte[]{ (byte) rwnd };
 
-            byte[] ackRaw = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
-                    ackRaw,
-                    ackRaw.length,
+                    PacketEncoder.encode(ack),
+                    PacketEncoder.encode(ack).length,
                     dpData.getAddress(),
                     dpData.getPort()));
         }
