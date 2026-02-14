@@ -16,7 +16,7 @@ public class Sender {
 
         InetAddress addr = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
-        socket.setSoTimeout(800);
+        socket.setSoTimeout(500);
 
         int baseSeq = new Random().nextInt(65536);
         int nextSeq = (baseSeq + 1) % 65536;
@@ -28,7 +28,7 @@ public class Sender {
         int lastAck = -1;
         int dupAckCount = 0;
 
-        Map<Integer, byte[]> inFlight = new TreeMap<>();
+        TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
         int offset = 0;
         byte[] buffer = new byte[2048];
 
@@ -37,7 +37,6 @@ public class Sender {
         syn.seq = baseSeq;
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
-
         byte[] synRaw = PacketEncoder.encode(syn);
         socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
 
@@ -78,12 +77,9 @@ public class Sender {
                 int ackSeq = ack.ack;
                 rwnd = ack.data[0] & 0xFF;
 
-                // Dup ACK
-                if (ackSeq == lastAck) {
-                    dupAckCount++;
-                } else {
-                    dupAckCount = 0;
-                }
+                if (ackSeq == lastAck) dupAckCount++;
+                else dupAckCount = 0;
+
                 lastAck = ackSeq;
 
                 // Fast retransmit
@@ -102,20 +98,16 @@ public class Sender {
                 List<Integer> toRemove = new ArrayList<>();
                 for (int s : inFlight.keySet()) {
                     int diff = (ackSeq - s + 65536) % 65536;
-                    if (diff < 32768) {
-                        toRemove.add(s);
-                    }
+                    if (diff < 32768) toRemove.add(s);
                 }
                 for (int s : toRemove) inFlight.remove(s);
 
-                // Congestion window
                 if (!toRemove.isEmpty()) {
                     if (cwnd < ssthresh) cwnd *= 2;
                     else cwnd += 1;
                 }
 
             } catch (SocketTimeoutException e) {
-                // Timeout
                 ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;
                 dupAckCount = 0;
