@@ -12,10 +12,9 @@ public class Receiver {
 
         byte[] buffer = new byte[2048];
         int expectedSeq;
-
         int rwnd = BUFFER_MAX;
 
-        // Buffer hors ordre
+        // Buffer pour paquets hors ordre
         TreeSet<Integer> outOfOrder = new TreeSet<>();
 
         System.out.println("Receiver en écoute...");
@@ -30,12 +29,13 @@ public class Receiver {
         Packet synAck = new Packet();
         synAck.seq = new Random().nextInt(65536);
         synAck.ack = expectedSeq;
-        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[] { (byte) rwnd };
 
+        byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(
-                PacketEncoder.encode(synAck),
-                PacketEncoder.encode(synAck).length,
+                synAckRaw,
+                synAckRaw.length,
                 dp.getAddress(),
                 dp.getPort()
         ));
@@ -47,61 +47,61 @@ public class Receiver {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
-
             Packet p = PacketEncoder.decode(dpData.getData());
 
+            // FIN
             if ((p.flags & Packet.FLAG_FIN) != 0) {
                 System.out.println("FIN reçu, fermeture");
                 break;
             }
 
-            /* ===== DUPLICATE / OLD ===== */
-            if (p.seq < expectedSeq || outOfOrder.contains(p.seq)) {
-                System.out.println("[DROP] seq=" + p.seq);
-            }
-            /* ===== IN ORDER ===== */
-            else if (p.seq == expectedSeq) {
+            // Paquet attendu
+            if (p.seq == expectedSeq) {
 
-                System.out.println("[IN ORDER] seq=" + p.seq);
                 expectedSeq = (expectedSeq + 1) % 65536;
 
-                // Drain les paquets consécutifs déjà bufferés
-                while (outOfOrder.contains(expectedSeq)) {
-                    outOfOrder.remove(expectedSeq);
-                    System.out.println("[DRAIN BUFFER] seq=" + expectedSeq);
+                // Drainer le buffer pour tous les paquets consécutifs déjà reçus
+                while (outOfOrder.remove(expectedSeq)) {
                     expectedSeq = (expectedSeq + 1) % 65536;
                 }
+
+                System.out.println("[IN ORDER] seq=" + p.seq);
+
             }
-            /* ===== FUTURE ===== */
+            // Paquet hors ordre
+            else if (!outOfOrder.contains(p.seq) && outOfOrder.size() < BUFFER_MAX) {
+
+                outOfOrder.add(p.seq);
+                System.out.println("[BUFFERED] seq=" + p.seq);
+
+            }
+            // Paquet doublon ou buffer plein
             else {
-                if (outOfOrder.size() < BUFFER_MAX) {
-                    outOfOrder.add(p.seq);
-                    System.out.println("[BUFFERED] seq=" + p.seq);
-                } else {
-                    System.out.println("[DROP WINDOW FULL] seq=" + p.seq);
-                }
+                System.out.println("[DROP] seq=" + p.seq);
             }
 
-            // mise à jour rwnd
+            // Mise à jour de rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // ACK cumulatif = expectedSeq
+            // Envoi de l'ACK cumulatif correct
+            int ackSeq = (expectedSeq - 1 + 65536) % 65536;
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
-            ack.ack = expectedSeq;
+            ack.ack = ackSeq;
             ack.data = new byte[] { (byte) rwnd };
 
+            byte[] ackRaw = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
-                    PacketEncoder.encode(ack),
-                    PacketEncoder.encode(ack).length,
+                    ackRaw,
+                    ackRaw.length,
                     dpData.getAddress(),
                     dpData.getPort()
             ));
 
-            System.out.println("[ACK SENT] ack=" + ack.ack +
-                    " rwnd=" + rwnd);
+            System.out.println("[ACK SENT] ack=" + ack.ack + " rwnd=" + rwnd);
         }
 
         socket.close();
+        System.out.println("Receiver fermé");
     }
 }
