@@ -5,12 +5,7 @@ import java.util.*;
 public class Sender {
 
     static final int MAX_DATA = 1024;
-    static final int TIMEOUT = 500; // ms
-    static final int MAX_CWND = 1000;
-
-    static final byte FLAG_SYN = 0x01;
-    static final byte FLAG_ACK = 0x02;
-    static final byte FLAG_FIN = 0x04;
+    static final int CWND_MAX = 64;
 
     public static void main(String[] args) throws Exception {
 
@@ -20,138 +15,107 @@ public class Sender {
 
         byte[] fileData = Files.readAllBytes(Path.of(filename));
 
-        InetAddress address = InetAddress.getByName(ip);
+        InetAddress addr = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
-        socket.setSoTimeout(50);
 
-        Random rand = new Random();
-        int seqBase = rand.nextInt();
+        int seq = new Random().nextInt(65536);
+        int nextSeq = (seq + 1) % 65536;
 
-        // ---------- HANDSHAKE ----------
-        Packet syn = new Packet();
-        syn.seq = seqBase;
-        syn.ack = 0;
-        syn.flags = FLAG_SYN;
-        syn.data = new byte[0];
+        /* ===== TCP-like variables ===== */
+        int cwnd = 1;
+        int ssthresh = 16;
+        int rwnd = 10;   // valeur initiale supposée
 
-        socket.send(new DatagramPacket(
-                PacketEncoder.encode(syn),
-                PacketEncoder.encode(syn).length,
-                address,
-                port
-        ));
+        long rto = 1000;
+        socket.setSoTimeout((int) rto);
+
+        Map<Integer, byte[]> inFlight = new TreeMap<>();
+        int offset = 0;
 
         byte[] buffer = new byte[2048];
-        socket.receive(new DatagramPacket(buffer, buffer.length));
-        seqBase++;
+
+        /* ===== HANDSHAKE ===== */
+        Packet syn = new Packet();
+        syn.seq = seq;
+        syn.flags = Packet.FLAG_SYN;
+        syn.data = new byte[0];
+
+        byte[] rawSyn = PacketEncoder.encode(syn);
+        socket.send(new DatagramPacket(rawSyn, rawSyn.length, addr, port));
+
+        DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
+        socket.receive(dp); // SYN+ACK
 
         System.out.println("Connexion établie");
 
-        // ---------- DÉCOUPAGE ----------
-        List<byte[]> chunks = new ArrayList<>();
-        for (int i = 0; i < fileData.length; i += MAX_DATA) {
-            chunks.add(Arrays.copyOfRange(
-                    fileData, i, Math.min(i + MAX_DATA, fileData.length)
-            ));
-        }
+        /* ===== TRANSFERT ===== */
+        while (offset < fileData.length || !inFlight.isEmpty()) {
 
-        int totalPackets = chunks.size();
+            int win = Math.min(cwnd, rwnd);
 
-        // ---------- CONGESTION CONTROL ----------
-        int cwnd = 1;
-        int ssthresh = 32;
+            /* --- Envoi --- */
+            while (offset < fileData.length && inFlight.size() < win) {
+                int size = Math.min(MAX_DATA, fileData.length - offset);
+                byte[] chunk = Arrays.copyOfRange(fileData, offset, offset + size);
 
-        int base = 0;
-        int nextSeq = 0;
-
-        Map<Integer, Packet> window = new HashMap<>();
-        Map<Integer, Long> sendTime = new HashMap<>();
-
-        while (base < totalPackets) {
-
-            // ---- ENVOI contrôlé par cwnd ----
-            while (nextSeq < base + cwnd && nextSeq < totalPackets) {
                 Packet p = new Packet();
-                p.seq = seqBase + nextSeq;
-                p.ack = 0;
-                p.flags = 0;
-                p.data = chunks.get(nextSeq);
+                p.seq = nextSeq;
+                p.data = chunk;
 
                 byte[] raw = PacketEncoder.encode(p);
-                socket.send(new DatagramPacket(raw, raw.length, address, port));
+                socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
-                window.put(nextSeq, p);
-                sendTime.put(nextSeq, System.currentTimeMillis());
+                inFlight.put(nextSeq, raw);
 
-                nextSeq++;
+                offset += size;
+                nextSeq = (nextSeq + 1) % 65536;
             }
 
-            boolean timeoutDetected = false;
-
-            // ---- RÉCEPTION ACK ----
             try {
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
 
                 Packet ack = PacketEncoder.decode(dpAck.getData());
-                int ackIndex = ack.ack - seqBase;
+                if ((ack.flags & Packet.FLAG_ACK) == 0)
+                    continue;
 
-                if (ackIndex > base) {
-                    int newlyAcked = ackIndex - base;
+                int ackSeq = ack.ack;
+                rwnd = ack.data[0] & 0xFF; // rwnd annoncée
 
-                    for (int i = base; i < ackIndex; i++) {
-                        window.remove(i);
-                        sendTime.remove(i);
-                    }
-                    base = ackIndex;
+                /* --- Retirer les paquets ACKés (ACK cumulatif strict) --- */
+                inFlight.keySet().removeIf(s -> (s - ackSeq + 65536) % 65536 <= 0);
 
-                    // ---- ADAPTATION cwnd ----
-                    if (cwnd < ssthresh) {
-                        cwnd += newlyAcked;            // slow start
-                    } else {
-                        cwnd += Math.max(1, newlyAcked / cwnd); // avoidance
-                    }
-
-                    cwnd = Math.min(cwnd, MAX_CWND);
-
-                    System.out.println("ACK reçu → cwnd=" + cwnd);
+                /* --- Evolution cwnd --- */
+                if (cwnd < ssthresh) {
+                    cwnd = Math.min(cwnd * 2, CWND_MAX);
+                } else {
+                    cwnd = Math.min(cwnd + 1, CWND_MAX);
                 }
 
             } catch (SocketTimeoutException e) {
-                timeoutDetected = true;
-            }
+                System.out.println("TIMEOUT");
 
-            // ---- TIMEOUT → CONGESTION ----
-            if (timeoutDetected) {
-                ssthresh = Math.max(1, cwnd / 2);
+                ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;
 
-                System.out.println("Timeout → cwnd=1, ssthresh=" + ssthresh);
-            }
-
-            // ---- RETRANSMISSION ----
-            long now = System.currentTimeMillis();
-            for (int i : new ArrayList<>(window.keySet())) {
-                if (now - sendTime.get(i) > TIMEOUT) {
-                    Packet p = window.get(i);
-                    byte[] raw = PacketEncoder.encode(p);
-                    socket.send(new DatagramPacket(raw, raw.length, address, port));
-                    sendTime.put(i, now);
+                if (!inFlight.isEmpty()) {
+                    int s = inFlight.keySet().iterator().next();
+                    byte[] raw = inFlight.get(s);
+                    socket.send(new DatagramPacket(raw, raw.length, addr, port));
                 }
             }
         }
 
-        // ---------- FIN ----------
+        /* ===== FIN ===== */
         Packet fin = new Packet();
-        fin.seq = seqBase + totalPackets;
-        fin.ack = 0;
-        fin.flags = FLAG_FIN;
+        fin.seq = nextSeq;
+        fin.flags = Packet.FLAG_FIN;
         fin.data = new byte[0];
 
         byte[] rawFin = PacketEncoder.encode(fin);
-        socket.send(new DatagramPacket(rawFin, rawFin.length, address, port));
+        socket.send(new DatagramPacket(rawFin, rawFin.length, addr, port));
 
-        System.out.println("FIN envoyé");
         socket.close();
+        System.out.println("Transfert terminé");
     }
 }

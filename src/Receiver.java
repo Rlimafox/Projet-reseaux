@@ -3,9 +3,7 @@ import java.util.*;
 
 public class Receiver {
 
-    static final byte FLAG_SYN = 0x01;
-    static final byte FLAG_ACK = 0x02;
-    static final byte FLAG_FIN = 0x04;
+    static final int RWND_MAX = 10;
 
     public static void main(String[] args) throws Exception {
 
@@ -13,81 +11,52 @@ public class Receiver {
         DatagramSocket socket = new DatagramSocket(port);
 
         byte[] buffer = new byte[2048];
-        Random rand = new Random();
+        int expectedSeq;
 
         System.out.println("Receiver en écoute...");
 
-        // ---------- HANDSHAKE ----------
+        /* ===== HANDSHAKE ===== */
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
-
         Packet syn = PacketEncoder.decode(dp.getData());
-        if ((syn.flags & FLAG_SYN) == 0) {
-            System.out.println("Paquet invalide (SYN attendu)");
-            return;
-        }
 
-        System.out.println("SYN reçu seq=" + syn.seq);
-
-        int seqReceiver = rand.nextInt();
+        expectedSeq = (syn.seq + 1) % 65536;
 
         Packet synAck = new Packet();
-        synAck.seq = seqReceiver;
-        synAck.ack = syn.seq + 1;
-        synAck.flags = (byte) (FLAG_SYN | FLAG_ACK);
-        synAck.data = new byte[0];
+        synAck.seq = new Random().nextInt(65536);
+        synAck.ack = expectedSeq;
+        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.data = new byte[] { RWND_MAX };
 
-        byte[] rawSynAck = PacketEncoder.encode(synAck);
-        socket.send(new DatagramPacket(
-                rawSynAck,
-                rawSynAck.length,
-                dp.getAddress(),
-                dp.getPort()
-        ));
+        byte[] raw = PacketEncoder.encode(synAck);
+        socket.send(new DatagramPacket(raw, raw.length, dp.getAddress(), dp.getPort()));
 
-        System.out.println("SYN+ACK envoyé seq=" + seqReceiver);
+        System.out.println("Connexion établie");
 
-        // ---------- CONNEXION ÉTABLIE ----------
-        int expectedSeq = syn.seq + 1;
-        System.out.println("Connexion établie, attente des données...");
-
-        // Buffer hors-ordre
-        Map<Integer, byte[]> outOfOrder = new HashMap<>();
-
-        boolean fin = false;
-        while (!fin) {
+        /* ===== RÉCEPTION ===== */
+        while (true) {
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
 
             Packet p = PacketEncoder.decode(dpData.getData());
 
-            // --- Paquet attendu ---
+            if ((p.flags & Packet.FLAG_FIN) != 0) {
+                System.out.println("FIN reçu, fermeture");
+                break;
+            }
+
             if (p.seq == expectedSeq) {
-                deliver(p.data);
-                expectedSeq++;
-
-                // vider le buffer hors-ordre
-                while (outOfOrder.containsKey(expectedSeq)) {
-                    deliver(outOfOrder.remove(expectedSeq));
-                    expectedSeq++;
-                }
-            }
-            // --- Paquet futur (hors-ordre) ---
-            else if (p.seq > expectedSeq) {
-                outOfOrder.putIfAbsent(p.seq, p.data);
-                System.out.println("Paquet hors-ordre reçu seq=" + p.seq);
-            }
-            // --- Paquet déjà reçu ---
-            else {
-                System.out.println("Paquet dupliqué seq=" + p.seq);
+                expectedSeq = (expectedSeq + 1) % 65536;
+                System.out.println("Reçu OK seq=" + p.seq);
+            } else {
+                System.out.println("Hors ordre seq=" + p.seq + " attendu=" + expectedSeq);
             }
 
-            // --- ACK cumulatif ---
+            /* --- ACK cumulatif strict --- */
             Packet ack = new Packet();
-            ack.seq = 0;
-            ack.ack = expectedSeq;   // prochain attendu
-            ack.flags = FLAG_ACK;
-            ack.data = new byte[0];
+            ack.flags = Packet.FLAG_ACK;
+            ack.ack = (expectedSeq - 1 + 65536) % 65536;
+            ack.data = new byte[] { RWND_MAX };
 
             byte[] rawAck = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
@@ -96,51 +65,8 @@ public class Receiver {
                     dpData.getAddress(),
                     dpData.getPort()
             ));
-
-            System.out.println("ACK envoyé ack=" + expectedSeq);
-
-            if ((p.flags & FLAG_FIN) != 0) {
-                System.out.println("FIN reçu seq=" + p.seq);
-
-                // ACK du FIN
-                Packet ackFin = new Packet();
-                ackFin.seq = 0;
-                ackFin.ack = p.seq + 1;
-                ackFin.flags = FLAG_ACK;
-                ackFin.data = new byte[0];
-
-                byte[] rawAckFin = PacketEncoder.encode(ackFin);
-                socket.send(new DatagramPacket(
-                        rawAckFin,
-                        rawAckFin.length,
-                        dpData.getAddress(),
-                        dpData.getPort()
-                ));
-
-                // envoi FIN retour
-                Packet finBack = new Packet();
-                finBack.seq = expectedSeq;
-                finBack.ack = 0;
-                finBack.flags = FLAG_FIN;
-                finBack.data = new byte[0];
-
-                byte[] rawFinBack = PacketEncoder.encode(finBack);
-                socket.send(new DatagramPacket(
-                        rawFinBack,
-                        rawFinBack.length,
-                        dpData.getAddress(),
-                        dpData.getPort()
-                ));
-
-                System.out.println("FIN retour envoyé");
-                fin = true;
-            }
         }
-    }
 
-    private static void deliver(byte[] data) {
-        System.out.println("Reçu data (" + data.length + " octets)");
-        System.out.println(new String(data));
-        // ici : écriture fichier, stdout, buffer, etc.
+        socket.close();
     }
 }
