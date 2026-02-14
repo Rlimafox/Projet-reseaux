@@ -18,9 +18,6 @@ public class Sender {
         DatagramSocket socket = new DatagramSocket();
         socket.setSoTimeout(500);
 
-        int baseSeq = new Random().nextInt(65536);
-        int nextSeq = (baseSeq + 1) % 65536;
-
         int cwnd = 1;
         int ssthresh = 32;
         int rwnd = 32;
@@ -33,15 +30,22 @@ public class Sender {
         byte[] buffer = new byte[2048];
 
         // ===== HANDSHAKE =====
+        int baseSeq = new Random().nextInt(65536);
+
         Packet syn = new Packet();
         syn.seq = baseSeq;
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
-        byte[] synRaw = PacketEncoder.encode(syn);
-        socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
+        socket.send(new DatagramPacket(PacketEncoder.encode(syn), PacketEncoder.encode(syn).length, addr, port));
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
+        Packet synAck = PacketEncoder.decode(dp.getData());
+
+        // Premier seq de données = ACK du receiver
+        int nextSeq = synAck.ack;
+        baseSeq = nextSeq - 1;
+
         System.out.println("Connexion établie");
 
         // ===== TRANSMISSION =====
@@ -59,8 +63,8 @@ public class Sender {
 
                 byte[] raw = PacketEncoder.encode(p);
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
-
                 inFlight.put(nextSeq, raw);
+
                 System.out.println("[SEND] seq=" + nextSeq + " cwnd=" + cwnd);
 
                 offset += size;
@@ -79,7 +83,6 @@ public class Sender {
 
                 if (ackSeq == lastAck) dupAckCount++;
                 else dupAckCount = 0;
-
                 lastAck = ackSeq;
 
                 // Fast retransmit

@@ -3,7 +3,7 @@ import java.util.*;
 
 public class Receiver {
 
-    static final int BUFFER_MAX = 1024; // augmenter pour gros fichiers
+    static final int BUFFER_MAX = 1024;
 
     public static void main(String[] args) throws Exception {
         int port = Integer.parseInt(args[0]);
@@ -22,16 +22,21 @@ public class Receiver {
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
         Packet syn = PacketEncoder.decode(dp.getData());
+
+        // seq attendu = seq du SYN + 1
         expectedSeq = (syn.seq + 1) % 65536;
 
         Packet synAck = new Packet();
-        synAck.seq = new Random().nextInt(65536);
-        synAck.ack = expectedSeq;
+        synAck.seq = new Random().nextInt(65536); // sequence du receiver
+        synAck.ack = expectedSeq; // ACK du SYN du sender
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[]{ (byte) rwnd };
 
         byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(synAckRaw, synAckRaw.length, dp.getAddress(), dp.getPort()));
+
+        // Après handshake, expectedSeq = prochain seq que le sender enverra
+        expectedSeq = synAck.ack;
         System.out.println("Connexion établie");
 
         // ===== RÉCEPTION =====
@@ -45,11 +50,9 @@ public class Receiver {
                 break;
             }
 
-            // Paquet reçu en ordre
             if (p.seq == expectedSeq) {
                 expectedSeq = (expectedSeq + 1) % 65536;
 
-                // Libérer tous les paquets consécutifs dans le buffer
                 while (outOfOrder.containsKey(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % 65536;
@@ -64,10 +67,9 @@ public class Receiver {
                 System.out.println("[DROP] seq=" + p.seq);
             }
 
-            // Mettre à jour rwnd
             rwnd = BUFFER_MAX - outOfOrder.size();
 
-            // ACK cumulatif pour le dernier paquet consécutif reçu
+            // ACK cumulatif
             int ackSeq = (expectedSeq - 1 + 65536) % 65536;
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
