@@ -14,7 +14,9 @@ public class Receiver {
         int expectedSeq;
 
         int rwnd = BUFFER_MAX;
-        Queue<Integer> bufferQueue = new ArrayDeque<>();
+
+        // Buffer hors ordre
+        TreeSet<Integer> outOfOrder = new TreeSet<>();
 
         System.out.println("Receiver en écoute...");
 
@@ -53,22 +55,29 @@ public class Receiver {
                 break;
             }
 
-            if (p.seq == expectedSeq && bufferQueue.size() < BUFFER_MAX) {
-                bufferQueue.add(p.seq);
+            if (p.seq == expectedSeq) {
+
                 expectedSeq = (expectedSeq + 1) % 65536;
-                System.out.println("[RECV] seq=" + p.seq);
+
+                // Vérifie si les suivants sont déjà bufferisés
+                while (outOfOrder.contains(expectedSeq)) {
+                    outOfOrder.remove(expectedSeq);
+                    expectedSeq = (expectedSeq + 1) % 65536;
+                }
+
+                System.out.println("[IN ORDER] seq=" + p.seq);
+
+            } else if (!outOfOrder.contains(p.seq)
+                    && outOfOrder.size() < BUFFER_MAX) {
+
+                outOfOrder.add(p.seq);
+                System.out.println("[BUFFERED] seq=" + p.seq);
+
             } else {
-                System.out.println("[DROP] seq=" + p.seq +
-                        " attendu=" + expectedSeq);
+                System.out.println("[DROP] seq=" + p.seq);
             }
 
-            /* Consommation progressive */
-            if (!bufferQueue.isEmpty()) {
-                Thread.sleep(50);
-                bufferQueue.poll();
-            }
-
-            rwnd = BUFFER_MAX - bufferQueue.size();
+            rwnd = BUFFER_MAX - outOfOrder.size();
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
@@ -82,7 +91,7 @@ public class Receiver {
                     dpData.getPort()
             ));
 
-            System.out.println("[SEND ACK] ack=" + ack.ack +
+            System.out.println("[ACK SENT] ack=" + ack.ack +
                     " rwnd=" + rwnd);
         }
 
