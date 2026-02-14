@@ -16,20 +16,22 @@ public class Sender {
 
         InetAddress addr = InetAddress.getByName(ip);
         DatagramSocket socket = new DatagramSocket();
+        socket.setSoTimeout(1000);
 
         int baseSeq = new Random().nextInt(65536);
         int nextSeq = (baseSeq + 1) % 65536;
 
-        /* ===== TCP Reno ===== */
+        /* ===== TCP Reno Variables ===== */
         int cwnd = 1;
         int ssthresh = 32;
         int rwnd = 32;
 
-        socket.setSoTimeout(1000);
+        int lastAck = -1;
+        int dupAckCount = 0;
+        boolean inFastRecovery = false;
 
         Map<Integer, byte[]> inFlight = new TreeMap<>();
         int offset = 0;
-
         byte[] buffer = new byte[2048];
 
         /* ===== HANDSHAKE ===== */
@@ -92,39 +94,70 @@ public class Sender {
             }
 
             try {
+
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
 
                 Packet ack = PacketEncoder.decode(dpAck.getData());
-
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
 
                 int ackSeq = ack.ack;
                 rwnd = ack.data[0] & 0xFF;
 
-                boolean newAck = false;
-
-                if (inFlight.containsKey(ackSeq)) {
-                    newAck = true;
-                }
-
-                inFlight.keySet().removeIf(s ->
-                        (s - ackSeq + 65536) % 65536 <= 0);
-
                 System.out.println("[ACK] ack=" + ackSeq +
                         " cwnd=" + cwnd +
                         " rwnd=" + rwnd);
 
-                /* ===== TCP Reno ===== */
+                /* ===== DUPLICATE ACK detection ===== */
+                if (ackSeq == lastAck) {
+                    dupAckCount++;
+                } else {
+                    dupAckCount = 0;
+                }
+
+                lastAck = ackSeq;
+
+                /* ===== FAST RETRANSMIT + FAST RECOVERY ===== */
+                if (dupAckCount == 3) {
+
+                    System.out.println("[FAST RETRANSMIT] seq=" + ((ackSeq + 1) % 65536));
+
+                    ssthresh = Math.max(2, cwnd / 2);
+                    cwnd = ssthresh + 3; // Fast Recovery
+                    inFastRecovery = true;
+
+                    int missingSeq = (ackSeq + 1) % 65536;
+
+                    if (inFlight.containsKey(missingSeq)) {
+                        socket.send(new DatagramPacket(
+                                inFlight.get(missingSeq),
+                                inFlight.get(missingSeq).length,
+                                addr,
+                                port
+                        ));
+                    }
+                }
+
+                boolean newAck = inFlight.containsKey(ackSeq);
+
+                inFlight.keySet().removeIf(s ->
+                        (s - ackSeq + 65536) % 65536 <= 0);
+
+                /* ===== Congestion Control ===== */
                 if (newAck) {
 
-                    if (cwnd < ssthresh) {
-                        // Slow Start (exponentiel)
-                        cwnd *= 2;
+                    if (inFastRecovery) {
+                        cwnd = ssthresh;
+                        inFastRecovery = false;
                     } else {
-                        // Congestion Avoidance (linéaire)
-                        cwnd += 1;
+                        if (cwnd < ssthresh) {
+                            // Slow Start
+                            cwnd *= 2;
+                        } else {
+                            // Congestion Avoidance
+                            cwnd += 1;
+                        }
                     }
                 }
 
@@ -134,6 +167,8 @@ public class Sender {
 
                 ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;
+                inFastRecovery = false;
+                dupAckCount = 0;
 
                 if (!inFlight.isEmpty()) {
                     int s = inFlight.keySet().iterator().next();
