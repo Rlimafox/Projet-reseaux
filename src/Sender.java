@@ -55,7 +55,24 @@ public class Sender {
         /* ===== TRANSFERT ===== */
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
-            int win = Math.min(cwnd, rwnd);
+            int win = Math.min(cwnd, Math.max(rwnd, 1));
+
+            if (rwnd == 0) {
+                System.out.println("[ZERO WINDOW] probing...");
+
+                if (!inFlight.isEmpty()) {
+                    int s = inFlight.keySet().iterator().next();
+                    socket.send(new DatagramPacket(
+                            inFlight.get(s),
+                            inFlight.get(s).length,
+                            addr,
+                            port
+                    ));
+                }
+
+                Thread.sleep(500);
+                continue;
+            }
 
             /* --- ENVOI --- */
             while (offset < fileData.length && inFlight.size() < win) {

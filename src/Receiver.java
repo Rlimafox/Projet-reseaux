@@ -61,9 +61,12 @@ public class Receiver {
             }
 
             /* --- Consommation simulée --- */
-            if (bufferQueue.size() > BUFFER_MAX / 2) {
+            /* --- Consommation simulée lente mais continue --- */
+            if (!bufferQueue.isEmpty()) {
+                Thread.sleep(50);   // simule traitement
                 bufferQueue.poll();
             }
+
 
             rwnd = BUFFER_MAX - bufferQueue.size();
 
