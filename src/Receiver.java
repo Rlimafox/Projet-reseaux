@@ -32,10 +32,9 @@ public class Receiver {
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = new byte[]{ (byte) rwnd };
 
-        byte[] synAckRaw = PacketEncoder.encode(synAck);
         socket.send(new DatagramPacket(
-                synAckRaw,
-                synAckRaw.length,
+                PacketEncoder.encode(synAck),
+                PacketEncoder.encode(synAck).length,
                 dp.getAddress(),
                 dp.getPort()));
 
@@ -47,47 +46,40 @@ public class Receiver {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
             socket.receive(dpData);
-
             Packet p = PacketEncoder.decode(dpData.getData());
 
             if (p.seq == expectedSeq) {
 
                 expectedSeq = (expectedSeq + 1) % SEQ_MOD;
 
-                // Simule consommation buffer
-                rwnd = Math.max(0, rwnd - 1);
-
                 while (outOfOrder.containsKey(expectedSeq)) {
                     outOfOrder.remove(expectedSeq);
                     expectedSeq = (expectedSeq + 1) % SEQ_MOD;
-                    rwnd = Math.max(0, rwnd - 1);
                 }
 
                 System.out.println("[IN ORDER] seq=" + p.seq);
-
-            } else if (!outOfOrder.containsKey(p.seq)
+            }
+            else if (!outOfOrder.containsKey(p.seq)
                     && outOfOrder.size() < BUFFER_MAX) {
 
                 outOfOrder.put(p.seq, p.data);
                 System.out.println("[BUFFERED] seq=" + p.seq);
             }
 
-            // Simule vidage progressif du buffer
-            rwnd = Math.min(BUFFER_MAX, rwnd + 2);
+            rwnd = BUFFER_MAX - outOfOrder.size();
 
             Packet ack = new Packet();
             ack.flags = Packet.FLAG_ACK;
             ack.ack = (expectedSeq - 1 + SEQ_MOD) % SEQ_MOD;
             ack.data = new byte[]{ (byte) rwnd };
 
-            byte[] ackRaw = PacketEncoder.encode(ack);
             socket.send(new DatagramPacket(
-                    ackRaw,
-                    ackRaw.length,
+                    PacketEncoder.encode(ack),
+                    PacketEncoder.encode(ack).length,
                     dpData.getAddress(),
                     dpData.getPort()));
 
-            System.out.println("[ACK SENT] ack=" + ack.ack + " rwnd=" + rwnd);
+            System.out.println("[ACK] " + ack.ack + " rwnd=" + rwnd);
         }
     }
 }

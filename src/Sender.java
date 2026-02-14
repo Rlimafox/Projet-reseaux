@@ -7,16 +7,14 @@ public class Sender {
     static final int MAX_DATA = 1024;
     static final int SEQ_MOD = 65536;
 
-    static void printWindowState(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
+    static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
         int effective = Math.min(cwnd, rwnd);
-        System.out.println(
-                "[WINDOW] " + event +
-                        " | cwnd=" + cwnd +
-                        " | ssthresh=" + ssthresh +
-                        " | rwnd=" + rwnd +
-                        " | effective=" + effective +
-                        " | inFlight=" + inFlight
-        );
+        System.out.println("[WINDOW] " + event +
+                " | cwnd=" + cwnd +
+                " | ssthresh=" + ssthresh +
+                " | rwnd=" + rwnd +
+                " | effective=" + effective +
+                " | inFlight=" + inFlight);
     }
 
     public static void main(String[] args) throws Exception {
@@ -50,12 +48,14 @@ public class Sender {
         syn.flags = Packet.FLAG_SYN;
         syn.data = new byte[0];
 
-        byte[] synRaw = PacketEncoder.encode(syn);
-        socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
+        socket.send(new DatagramPacket(
+                PacketEncoder.encode(syn),
+                PacketEncoder.encode(syn).length,
+                addr,
+                port));
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
         socket.receive(dp);
-
         Packet synAck = PacketEncoder.decode(dp.getData());
 
         int nextSeq = (baseSeq + 1) % SEQ_MOD;
@@ -68,7 +68,6 @@ public class Sender {
 
             int window = Math.min(cwnd, rwnd);
 
-            // Envoi
             while (offset < fileData.length && inFlight.size() < window) {
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
@@ -92,7 +91,6 @@ public class Sender {
             try {
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
-
                 Packet ack = PacketEncoder.decode(dpAck.getData());
 
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
@@ -108,29 +106,40 @@ public class Sender {
 
                 lastAck = ackSeq;
 
-                // ===== SUPPRESSION CUMULATIVE CORRECTE =====
+                // ===== SUPPRESSION CUMULATIVE + comptage =====
+                int removed = 0;
+
                 Iterator<Integer> it = inFlight.keySet().iterator();
                 while (it.hasNext()) {
                     int seq = it.next();
                     int diff = (ackSeq - seq + SEQ_MOD) % SEQ_MOD;
+
                     if (diff < SEQ_MOD / 2) {
                         it.remove();
+                        removed++;
                     }
                 }
 
-                // ===== CONGESTION CONTROL =====
+                // ===== CONGESTION CONTROL CORRECT =====
                 if (dupAckCount == 3) {
                     ssthresh = Math.max(2, cwnd / 2);
                     cwnd = ssthresh;
-                    printWindowState("FAST_RETRANSMIT", cwnd, ssthresh, rwnd, inFlight.size());
-                } else {
+                    printWindow("FAST_RETRANSMIT", cwnd, ssthresh, rwnd, inFlight.size());
+                }
+                else if (removed > 0) {
+
                     if (cwnd < ssthresh) {
-                        cwnd++; // slow start (croissance linéaire simplifiée)
+                        // Slow start
+                        cwnd += removed;
                     } else {
-                        if (cwnd > 0)
-                            cwnd += 1; // congestion avoidance simplifiée
+                        // Congestion avoidance
+                        cwnd += Math.max(1, removed / cwnd);
                     }
-                    printWindowState("ACK", cwnd, ssthresh, rwnd, inFlight.size());
+
+                    // éviter explosion infinie
+                    cwnd = Math.min(cwnd, 5000);
+
+                    printWindow("ACK x" + removed, cwnd, ssthresh, rwnd, inFlight.size());
                 }
 
             } catch (SocketTimeoutException e) {
@@ -141,7 +150,7 @@ public class Sender {
                 cwnd = 1;
                 dupAckCount = 0;
 
-                printWindowState("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());
+                printWindow("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());
 
                 if (!inFlight.isEmpty()) {
                     int first = inFlight.firstKey();
