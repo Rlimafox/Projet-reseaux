@@ -6,25 +6,59 @@ import java.util.*;
 
 
 
+/**
+
+ * Sender avancé :
+
+ *  - cwnd/ssthresh en OCTETS (byte-based congestion control)
+
+ *  - RTO adaptatif (SRTT/RTTVAR) + Karn
+
+ *  - SACK : retransmission ciblée des trous
+
+ *  - Fenêtre effective en OCTETS = min(cwndBytes, rwndBytes)
+
+ *  - Pacing léger
+
+ *  - Gestion wrap modulo 65536 pour les numéros de séquence
+
+ */
+
 public class Sender {
 
 
 
-    static final int MAX_DATA = 1400;
+    // ===== Paramètres =====
 
-    static final int SEQ_MOD = 65536;
+    static final int MAX_DATA = 1400;      // MSS ~1400B (évite fragmentation sur MTU 1500)
+
+    static final int SEQ_MOD  = 65536;     // seq 16 bits
+
+    static final int INIT_CWND_BYTES = MAX_DATA;        // 1 MSS
+
+    static final int INIT_SSTHRESH_BYTES = 64 * 1024;   // seuil de départ (~64KB)
+
+    static final int MAX_RETX_BURST = 8;                // sécurité (rarement utilisé avec SACK)
+
+    static final int PACE_EVERY = 64;                   // pacing léger : pause après N envois
+
+    static final int PACE_SLEEP_MS = 1;
 
 
 
-    // --- CONFIG de la rafale Go-Back-N ---
+    // ===== RTO / RTT (RFC6298-like) =====
 
-    // Nombre max de segments à retransmettre d'affilée lors d'une perte.
+    static final int RTO_MIN_MS = 200;
 
-    static final int MAX_RETX_BURST = 8;
+    static final int RTO_MAX_MS = 3000;
+
+    static final double ALPHA = 1.0 / 8.0;
+
+    static final double BETA  = 1.0 / 4.0;
 
 
 
-    /****************** Utils séquences ******************/
+    // ===== Séquence utils (modulo) =====
 
     static boolean seqLess(int a, int b) {
 
@@ -32,134 +66,145 @@ public class Sender {
 
     }
 
+    static boolean seqLE(int a, int b) { return a == b || seqLess(a, b); }
+
+    static boolean seqGreater(int a, int b) { return seqLess(b, a); }
+
+    static boolean seqGE(int a, int b) { return a == b || seqGreater(a, b); }
+
+    static int seqNext(int s) { return (s + 1) % SEQ_MOD; }
 
 
-    static int distFromBase(int base, int seq) {
 
-        return (seq - base + SEQ_MOD) % SEQ_MOD;
+    // ===== Segment en vol =====
+
+    static class Segment {
+
+        final int seq;
+
+        final byte[] raw;
+
+        final int len;
+
+        long sendTimeMs;
+
+        boolean retransmitted;
+
+
+
+        Segment(int seq, byte[] raw, int len, long sendTimeMs) {
+
+            this.seq = seq; this.raw = raw; this.len = len;
+
+            this.sendTimeMs = sendTimeMs; this.retransmitted = false;
+
+        }
 
     }
 
 
 
-    static int findOldestRelativeToBase(Set<Integer> keys, int base) {
+    // ===== Impression fenêtre =====
 
-        int best = -1, bestDist = SEQ_MOD;
+    static void printWindow(String event, long cwndBytes, long ssthreshBytes, int rwndBytes, int inFlightSegs, int inFlightBytes) {
 
-        for (int k : keys) {
+        long effective = Math.min(cwndBytes, (long)rwndBytes);
 
-            int d = distFromBase(base, k);
+        System.out.println("[WINDOW] " + event +
 
-            if (d > 0 && d < bestDist) {
+                " | cwndB=" + cwndBytes +
 
-                bestDist = d;
+                " | ssthreshB=" + ssthreshBytes +
 
-                best = k;
+                " | rwndB=" + rwndBytes +
+
+                " | effB=" + effective +
+
+                " | inFlightSegs=" + inFlightSegs +
+
+                " | inFlightBytes=" + inFlightBytes);
+
+    }
+
+
+
+    // ===== Parse SACK blocks: ack.data = [rwndHi, rwndLo, (sHi,sLo,eHi,eLo)*] =====
+
+    static class AckInfo {
+
+        final int rwndBytes;
+
+        final int ackSeq; // cumulatif (next expected)
+
+        final List<int[]> sackBlocks; // [start,end] en seq 16 bits
+
+
+
+        AckInfo(int ackSeq, int rwndBytes, List<int[]> sacks) {
+
+            this.ackSeq = ackSeq; this.rwndBytes = rwndBytes; this.sackBlocks = sacks;
+
+        }
+
+    }
+
+
+
+    static AckInfo parseAck(Packet ack) {
+
+        int ackSeq = ack.ack;
+
+        int rwndBytes = 0;
+
+        List<int[]> sacks = new ArrayList<>();
+
+        if (ack.data != null && ack.data.length >= 2) {
+
+            rwndBytes = ((ack.data[0] & 0xFF) << 8) | (ack.data[1] & 0xFF);
+
+            for (int i = 2; i + 3 < ack.data.length; i += 4) {
+
+                int s = ((ack.data[i] & 0xFF) << 8) | (ack.data[i+1] & 0xFF);
+
+                int e = ((ack.data[i+2] & 0xFF) << 8) | (ack.data[i+3] & 0xFF);
+
+                sacks.add(new int[]{s, e});
 
             }
 
         }
 
-        return best;
+        return new AckInfo(ackSeq, rwndBytes, sacks);
 
     }
 
 
 
-    static void retransmitIfPresent(DatagramSocket socket, InetAddress addr, int port,
+    // sequence in [start..end] modulo (start/end d’un bloc SACK)
 
-                                    Map<Integer, byte[]> inFlight, int seq) throws Exception {
-        socket.setReceiveBufferSize(4 * 1024 * 1024);
+    static boolean seqInRange(int s, int start, int end) {
 
-        socket.setSendBufferSize(4 * 1024 * 1024);
+        if (start == end) return s == start;
 
-        byte[] raw = inFlight.get(seq);
+        if (((end - start + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2)) {
 
-        if (raw != null) {
+            // intervalle "normal" (pas de wrap)
 
-            socket.send(new DatagramPacket(raw, raw.length, addr, port));
+            return seqGE(s, start) && seqLE(s, end);
 
-            System.out.println("[RETX] seq=" + seq);
+        } else {
 
-        }
+            // intervalle qui wrap
 
-    }
-
-
-
-    /*** 🔥 Retransmission en rafale depuis 'base' (lastAck) : Go-Back-N limité ***/
-
-    static void retransmitBurstFrom(DatagramSocket socket, InetAddress addr, int port,
-
-                                    Map<Integer, byte[]> inFlight, int base, int maxCount) throws Exception {
-
-        // On parcourt les clés de inFlight dans l'ordre "modulo" à partir de 'base'
-
-        // et on tente d'en renvoyer jusqu'à maxCount.
-
-        if (inFlight.isEmpty()) return;
-
-
-
-        // 1) Construire une liste triée par distance modulo depuis 'base'
-
-        List<Integer> keys = new ArrayList<>(inFlight.keySet());
-
-        keys.sort(Comparator.comparingInt(k -> distFromBase(base, k)));
-
-
-
-        int sent = 0;
-
-        for (int k : keys) {
-
-            int d = distFromBase(base, k);
-
-            if (d <= 0) continue;               // on ne renvoie pas les anciens déjà ACKés
-
-            retransmitIfPresent(socket, addr, port, inFlight, k);
-
-            sent++;
-
-            if (sent >= maxCount) break;
+            return seqGE(s, start) || seqLE(s, end);
 
         }
-
-        if (sent > 0) {
-
-            System.out.println("[RETX-BURST] from=" + base + " count=" + sent);
-
-        }
-
-    }
-
-
-
-    /****************** Logs fenêtre ******************/
-
-    static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
-
-        int effective = Math.min(cwnd, rwnd);
-
-        System.out.println("[WINDOW] " + event +
-
-                " | cwnd=" + cwnd +
-
-                " | ssthresh=" + ssthresh +
-
-                " | rwnd=" + rwnd +
-
-                " | effective=" + effective +
-
-                " | inFlight=" + inFlight);
 
     }
 
 
 
     public static void main(String[] args) throws Exception {
-
-
 
         String ip = args[0];
 
@@ -179,29 +224,61 @@ public class Sender {
 
         socket.setSoTimeout(500);
 
+        socket.setReceiveBufferSize(4 * 1024 * 1024);
 
-
-        int cwnd = 1;
-
-        int ssthresh = 32;
-
-        int rwnd = 32;
+        socket.setSendBufferSize(4 * 1024 * 1024);
 
 
 
-        int lastAck = -1;
+        // ===== Contrôle de congestion (byte-based) =====
+
+        long cwndBytes = INIT_CWND_BYTES;
+
+        long ssthreshBytes = INIT_SSTHRESH_BYTES;
+
+
+
+        // Fenêtre de réception annoncée (octets)
+
+        int rwndBytes = 64 * 1024;
+
+
+
+        // RTT/RTO
+
+        boolean rttInit = false;
+
+        double srtt = 0.0, rttvar = 0.0;
+
+        int RTOms = 500;
+
+
+
+        // DUPACK
+
+        int lastCumAckSeq = -1;
 
         int dupAckCount = 0;
 
-
-
-        TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
-
-        byte[] buffer = new byte[2048];
+        boolean inFastRecovery = false;
 
 
 
-        // ===== HANDSHAKE =====
+        // In-flight : seq -> segment (TreeMap uniquement comme conteneur ; on utilise nos comparaisons modulo)
+
+        final Map<Integer, Segment> inFlight = new HashMap<>();
+
+        int inFlightBytes = 0;
+
+
+
+        // Buffer pour réception d’ACKs
+
+        byte[] rxBuf = new byte[2048];
+
+
+
+        // ===== Handshake =====
 
         int baseSeq = new Random().nextInt(SEQ_MOD);
 
@@ -223,13 +300,17 @@ public class Sender {
 
 
 
-        DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
+        DatagramPacket dp = new DatagramPacket(rxBuf, rxBuf.length);
 
         socket.receive(dp);
 
 
 
         Packet synAck = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
+
+        AckInfo synAckInfo = parseAck(synAck);
+
+        if (synAckInfo.rwndBytes > 0) rwndBytes = synAckInfo.rwndBytes;
 
 
 
@@ -243,39 +324,27 @@ public class Sender {
 
 
 
-        // ===== BOUCLE =====
+        long lastSendTs = System.currentTimeMillis();
+
+        int sentSinceSleep = 0;
+
+
 
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
 
 
-            int window = Math.min(cwnd, rwnd);
+            // ===== Fenêtre effective en OCTETS =====
+
+            long windowBytes = Math.min(cwndBytes, (long) rwndBytes);
 
 
 
-            // Zero-window probe : cibler le prochain attendu
+            // ===== Envoi tant qu'il reste de la place dans la fenêtre =====
 
-            if (rwnd == 0 && !inFlight.isEmpty()) {
-
-                int target = inFlight.containsKey(lastAck) ? lastAck
-
-                        : findOldestRelativeToBase(inFlight.keySet(), lastAck);
-
-                if (target != -1) {
-
-                    retransmitIfPresent(socket, addr, port, inFlight, target);
-
-                    System.out.println("[PROBE] seq=" + target);
-
-                }
-
-            }
+            while (offset < fileData.length && (inFlightBytes + MAX_DATA) <= windowBytes) {
 
 
-
-            // Envoi tant qu'il reste de la place dans la fenêtre effective
-            int sentSinceLastSleep = 0;
-            while (offset < fileData.length && inFlight.size() < window) {
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
 
@@ -293,23 +362,33 @@ public class Sender {
 
                 byte[] raw = PacketEncoder.encode(p);
 
+                long now = System.currentTimeMillis();
+
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
 
 
-                inFlight.put(nextSeq, raw);
+                Segment seg = new Segment(nextSeq, raw, raw.length, now);
+
+                inFlight.put(nextSeq, seg);
+
+                inFlightBytes += seg.len;
+
+
 
                 offset += size;
 
-                nextSeq = (nextSeq + 1) % SEQ_MOD;
+                nextSeq = seqNext(nextSeq);
 
-                sentSinceLastSleep++;
 
-                if (sentSinceLastSleep >= 64) { // toutes 64 émissions
 
-                    try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+                // pacing léger
 
-                    sentSinceLastSleep = 0;
+                if (++sentSinceSleep >= PACE_EVERY) {
+
+                    try { Thread.sleep(PACE_SLEEP_MS); } catch (InterruptedException ignored) {}
+
+                    sentSinceSleep = 0;
 
                 }
 
@@ -319,7 +398,13 @@ public class Sender {
 
             try {
 
-                DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
+                // Ajuste timeout dynamiquement
+
+                socket.setSoTimeout(RTOms);
+
+
+
+                DatagramPacket dpAck = new DatagramPacket(rxBuf, rxBuf.length);
 
                 socket.receive(dpAck);
 
@@ -331,35 +416,101 @@ public class Sender {
 
 
 
-                int ackSeq = ack.ack;
+                AckInfo info = parseAck(ack);
 
-                if (ack.data != null && ack.data.length > 0)
+                int ackSeq = info.ackSeq;
 
-                    rwnd = ack.data[0] & 0xFF;
-
-
-
-                if (ackSeq == lastAck) dupAckCount++; else dupAckCount = 0;
-
-                lastAck = ackSeq;
+                if (info.rwndBytes > 0) rwndBytes = info.rwndBytes;
 
 
 
-                // Nettoyage inFlight (ACK cumulatif)
+                // DUPACK counting (basé sur ACK cumulatif)
 
-                int removed = 0;
+                if (ackSeq == lastCumAckSeq) {
 
-                Iterator<Integer> it = inFlight.keySet().iterator();
+                    dupAckCount++;
 
-                while (it.hasNext()) {
+                } else {
 
-                    int seq = it.next();
+                    dupAckCount = 0;
 
-                    if (seqLess(seq, ackSeq)) {
+                }
 
-                        it.remove();
+                lastCumAckSeq = ackSeq;
 
-                        removed++;
+
+
+                // ===== Nettoyage par ACK cumulatif =====
+
+                int ackedBytes = 0;
+
+                List<Segment> freshlyAcked = new ArrayList<>();
+
+
+
+                // Retire tout ce qui est strictement < ackSeq (modulo)
+
+                List<Integer> toRemove = new ArrayList<>();
+
+                for (Integer s : inFlight.keySet()) {
+
+                    if (seqLess(s, ackSeq)) {
+
+                        Segment seg = inFlight.get(s);
+
+                        toRemove.add(s);
+
+                        ackedBytes += seg.len;
+
+                        freshlyAcked.add(seg);
+
+                    }
+
+                }
+
+                for (Integer s : toRemove) {
+
+                    inFlightBytes -= inFlight.get(s).len;
+
+                    inFlight.remove(s);
+
+                }
+
+
+
+                // ===== Nettoyage par SACK =====
+
+                if (!info.sackBlocks.isEmpty()) {
+
+                    List<Integer> sackRemove = new ArrayList<>();
+
+                    for (Map.Entry<Integer, Segment> e : inFlight.entrySet()) {
+
+                        int s = e.getKey();
+
+                        for (int[] blk : info.sackBlocks) {
+
+                            if (seqInRange(s, blk[0], blk[1])) {
+
+                                sackRemove.add(s);
+
+                                ackedBytes += e.getValue().len;
+
+                                freshlyAcked.add(e.getValue());
+
+                                break;
+
+                            }
+
+                        }
+
+                    }
+
+                    for (Integer s : sackRemove) {
+
+                        inFlightBytes -= inFlight.get(s).len;
+
+                        inFlight.remove(s);
 
                     }
 
@@ -367,77 +518,149 @@ public class Sender {
 
 
 
-                // Fast retransmit: 3 dupACK → rafale Go-Back-N
+                // ===== RTT sample (Karn) : seulement si segment NON retransmis =====
 
-                if (dupAckCount == 3) {
+                long now = System.currentTimeMillis();
 
-                    int target = inFlight.containsKey(lastAck) ? lastAck
+                for (Segment seg : freshlyAcked) {
 
-                            : findOldestRelativeToBase(inFlight.keySet(), lastAck);
+                    if (!seg.retransmitted) {
 
-                    if (target != -1) {
+                        int sample = (int) Math.max(1, now - seg.sendTimeMs);
 
-                        // on renvoie d'abord le "next expected"
+                        if (!rttInit) {
 
-                        retransmitIfPresent(socket, addr, port, inFlight, target);
+                            srtt = sample;
 
-                        // 🔥 puis on renvoie quelques suivants (car le RX a jeté tout l'hors-ordre)
+                            rttvar = sample / 2.0;
 
-                        retransmitBurstFrom(socket, addr, port, inFlight, lastAck, MAX_RETX_BURST - 1);
+                            rttInit = true;
+
+                        } else {
+
+                            double err = sample - srtt;
+
+                            srtt   += ALPHA * err;
+
+                            rttvar += BETA  * (Math.abs(err) - rttvar);
+
+                        }
+
+                        int rto = (int) (srtt + Math.max(10, 4 * rttvar));
+
+                        RTOms = Math.max(RTO_MIN_MS, Math.min(RTO_MAX_MS, rto));
+
+                        break; // un seul sample par ACK suffit
 
                     }
 
-                    ssthresh = Math.max(2, cwnd / 2);
-
-                    cwnd = ssthresh;
-
-                }
-
-                // Evolution de cwnd
-
-                else if (removed > 0) {
-
-                    if (cwnd < ssthresh) cwnd += removed; else cwnd += 1;
-
                 }
 
 
 
-                printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
+                // ===== Fast retransmit / recovery =====
 
-            }
+                if (dupAckCount >= 3 && inFlight.containsKey(ackSeq)) {
 
-            catch (SocketTimeoutException e) {
+                    // Ssthresh = moitié, cwnd = ssthresh (+ optionnel 3*MSS), on reste simple
 
-                // TIMEOUT → cwnd reset + rafale Go-Back-N
+                    ssthreshBytes = Math.max(2 * MAX_DATA, (int)(cwndBytes / 2));
 
-                ssthresh = Math.max(2, cwnd / 2);
+                    cwndBytes = ssthreshBytes;
 
-                cwnd = 1;
+
+
+                    // Retransmettre la perte présumée (ackSeq) puis quelques trous non SACKés proches
+
+                    fastRetransmit(socket, addr, port, inFlight, ackSeq, info.sackBlocks);
+
+
+
+                    dupAckCount = 0; // évite retriggers en boucle
+
+                    inFastRecovery = true;
+
+                } else {
+
+                    inFastRecovery = false;
+
+                }
+
+
+
+                // ===== Évolution cwnd (AIMD byte-based) =====
+
+                if (ackedBytes > 0) {
+
+                    if (cwndBytes < ssthreshBytes) {
+
+                        // Slow start : + ackedBytes
+
+                        cwndBytes += ackedBytes;
+
+                    } else {
+
+                        // Congestion avoidance : + MSS^2 / cwnd (approximation par ACK)
+
+                        long add = (long) Math.max(1, (MAX_DATA * (long)ackedBytes) / Math.max(MAX_DATA, cwndBytes));
+
+                        cwndBytes += add;
+
+                    }
+
+                }
+
+
+
+                printWindow("ACK", cwndBytes, ssthreshBytes, rwndBytes, inFlight.size(), inFlightBytes);
+
+
+
+            } catch (SocketTimeoutException te) {
+
+                // ===== TIMEOUT : RTO, cwnd reset, retx ciblée =====
+
+                ssthreshBytes = Math.max(2 * MAX_DATA, (int)(cwndBytes / 2));
+
+                cwndBytes = MAX_DATA; // 1 MSS
 
                 dupAckCount = 0;
 
-
-
-                printWindow("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());
+                inFastRecovery = false;
 
 
 
-                if (!inFlight.isEmpty()) {
+                printWindow("TIMEOUT", cwndBytes, ssthreshBytes, rwndBytes, inFlight.size(), inFlightBytes);
 
-                    int target = inFlight.containsKey(lastAck) ? lastAck
 
-                            : findOldestRelativeToBase(inFlight.keySet(), lastAck);
 
-                    if (target != -1) {
+                // Retransmettre le "next expected" (lastCumAckSeq) + quelques trous non SACKés
 
-                        // idem : renvoyer le "next expected" puis une petite rafale derrière
+                if (!inFlight.isEmpty() && lastCumAckSeq != -1) {
 
-                        retransmitIfPresent(socket, addr, port, inFlight, target);
+                    targetedRetransmitOnTimeout(socket, addr, port, inFlight, lastCumAckSeq);
 
-                        retransmitBurstFrom(socket, addr, port, inFlight, lastAck, MAX_RETX_BURST - 1);
+                }
 
-                    }
+            }
+
+
+
+            // ===== Zero-window probing ciblé =====
+
+            if (rwndBytes == 0 && !inFlight.isEmpty() && lastCumAckSeq != -1) {
+
+                Segment seg = inFlight.get(lastCumAckSeq);
+
+                if (seg != null) {
+
+                    seg.retransmitted = true;
+
+                    seg.sendTimeMs = System.currentTimeMillis();
+
+                    socket.send(new DatagramPacket(seg.raw, seg.raw.length, addr, port));
+
+                    System.out.println("[PROBE] seq=" + seg.seq);
 
                 }
 
@@ -450,6 +673,148 @@ public class Sender {
         socket.close();
 
         System.out.println("Transfert terminé");
+
+    }
+
+
+
+    // ===== Fast retransmit ciblé avec SACK =====
+
+    static void fastRetransmit(DatagramSocket socket, InetAddress addr, int port,
+
+                               Map<Integer, Segment> inFlight, int ackSeq, List<int[]> sacks) throws Exception {
+
+
+
+        // 1) retransmettre la perte présumée (ackSeq)
+
+        Segment first = inFlight.get(ackSeq);
+
+        int retxCount = 0;
+
+
+
+        if (first != null) {
+
+            first.retransmitted = true;
+
+            first.sendTimeMs = System.currentTimeMillis();
+
+            socket.send(new DatagramPacket(first.raw, first.raw.length, addr, port));
+
+            System.out.println("[RETX] seq=" + first.seq);
+
+            retxCount++;
+
+        }
+
+
+
+        // 2) retransmettre quelques trous non SACKés (à partir de ackSeq)
+
+        // Construire la liste des séquences en vol en ordre croissant relatif à ackSeq
+
+        List<Integer> keys = new ArrayList<>(inFlight.keySet());
+
+        keys.sort(Comparator.comparingInt(k -> ((k - ackSeq + SEQ_MOD) % SEQ_MOD)));
+
+
+
+        for (int s : keys) {
+
+            if (s == ackSeq) continue; // déjà fait
+
+            // si s est déjà SACKé, on saute
+
+            if (isSacked(s, sacks)) continue;
+
+
+
+            Segment seg = inFlight.get(s);
+
+            if (seg == null) continue;
+
+
+
+            seg.retransmitted = true;
+
+            seg.sendTimeMs = System.currentTimeMillis();
+
+            socket.send(new DatagramPacket(seg.raw, seg.raw.length, addr, port));
+
+            System.out.println("[RETX] seq=" + seg.seq);
+
+
+
+            if (++retxCount >= MAX_RETX_BURST) break;
+
+        }
+
+
+
+        if (retxCount > 1) {
+
+            System.out.println("[RETX-BURST] de=" + ackSeq + " compte=" + retxCount);
+
+        }
+
+    }
+
+
+
+    static boolean isSacked(int seq, List<int[]> sacks) {
+
+        if (sacks == null || sacks.isEmpty()) return false;
+
+        for (int[] blk : sacks) {
+
+            if (seqInRange(seq, blk[0], blk[1])) return true;
+
+        }
+
+        return false;
+
+    }
+
+
+
+    // ===== Retransmission après TIMEOUT (ciblée autour du cumulatif) =====
+
+    static void targetedRetransmitOnTimeout(DatagramSocket socket, InetAddress addr, int port,
+
+                                            Map<Integer, Segment> inFlight, int baseSeq) throws Exception {
+
+        // renvoyer d’abord le cumulatif (baseSeq), puis quelques suivants
+
+        List<Integer> keys = new ArrayList<>(inFlight.keySet());
+
+        keys.sort(Comparator.comparingInt(k -> ((k - baseSeq + SEQ_MOD) % SEQ_MOD)));
+
+
+
+        int sent = 0;
+
+        for (int s : keys) {
+
+            Segment seg = inFlight.get(s);
+
+            if (seg == null) continue;
+
+
+
+            seg.retransmitted = true;
+
+            seg.sendTimeMs = System.currentTimeMillis();
+
+            socket.send(new DatagramPacket(seg.raw, seg.raw.length, addr, port));
+
+            System.out.println("[RETX] seq=" + seg.seq);
+
+            if (++sent >= MAX_RETX_BURST) break;
+
+        }
+
+        if (sent > 1) System.out.println("[RETX-BURST] de=" + baseSeq + " compte=" + sent);
 
     }
 

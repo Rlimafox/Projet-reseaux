@@ -8,37 +8,45 @@ public class Receiver {
 
 
 
+    /* =======================================================
+
+       PARAMÈTRES GÉNÉRAUX
+
+       ======================================================= */
+
+
+
     static final int SEQ_MOD = 65536;
 
 
 
-    // fenêtre annoncée : dynamique (limitée à 255 car 1 octet dans les ACK)
+    // --- Buffer réseau (tampon kernel simulé)
 
-    static volatile int bufferMax = 32;
+    static final int RX_BUFFER_BYTES = 512 * 1024; // 512 KB réseau
 
-    static volatile int bufferUsed = 0;
-
-
-
-    // Hors‑ordre : stockage temporaire
-
-    static final Map<Integer, Packet> outOfOrder = new HashMap<>();
+    static int rxUsed = 0; // EN OCTETS
 
 
 
-    // Consommation simulée (~50 segments/s)
+    // --- Buffer application (ne limite PAS rwnd)
 
-    static final int CONSUME_MS = 2;
+    // Simulation d'une app lente/variable
+
+    static int appBufferUsed = 0;
+
+    static final int APP_CONSUME_MS = 3;
+
+    static final int APP_CONSUME_AMOUNT = 4;
 
 
 
-    // ACK périodiques pour éviter blocages
+    // --- ACK périodiques (pour maintenir fast retransmit)
 
     static final int ACK_PERIOD_MS = 20;
 
 
 
-    static volatile int expectedSeq;
+    // Adresse source
 
     static volatile InetAddress lastAddr = null;
 
@@ -46,19 +54,113 @@ public class Receiver {
 
 
 
-    /*************** Utils modulo séquences ***************/
+    // Suivi de séquence
 
-    static int seqNext(int seq) { return (seq + 1) % SEQ_MOD; }
+    static volatile int expectedSeq;
+
+
+
+    // Hors‑ordre : stockage des segments reçus mais non consécutifs
+
+    static final TreeMap<Integer, byte[]> outOfOrder = new TreeMap<>();
+
+
+
+    /* =======================================================
+
+       UTILITAIRES POUR LES SÉQUENCES (modulo)
+
+       ======================================================= */
+
+
+
+    static int seqNext(int s) { return (s + 1) % SEQ_MOD; }
+
+
+
+    static boolean seqLess(int a, int b) {
+
+        return ((b - a + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2);
+
+    }
 
 
 
     static boolean seqGreater(int a, int b) {
 
-        return ((a - b + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2);
+        return seqLess(b, a);
 
     }
 
 
+
+    static int seqDist(int a, int b) {
+
+        return (a - b + SEQ_MOD) % SEQ_MOD;
+
+    }
+
+
+
+    /* =======================================================
+
+       SACK : construire la liste des blocs hors‑ordre
+
+       Format :
+
+       ack.data = [ rwnd_hi, rwnd_lo, <sack_hi, sack_lo>*2*N ]
+
+       Chaque bloc = (start, end) inclusif
+
+       ======================================================= */
+
+
+
+    static byte[] buildAckData(int rwndBytes, List<int[]> sackBlocks) {
+
+
+
+        int totalBytes = 2 + sackBlocks.size() * 4;
+
+        byte[] data = new byte[totalBytes];
+
+
+
+        data[0] = (byte)((rwndBytes >> 8) & 0xFF);
+
+        data[1] = (byte)(rwndBytes & 0xFF);
+
+
+
+        int idx = 2;
+
+        for (int[] blk : sackBlocks) {
+
+            int s = blk[0];
+
+            int e = blk[1];
+
+            data[idx++] = (byte)((s >> 8) & 0xFF);
+
+            data[idx++] = (byte)(s & 0xFF);
+
+            data[idx++] = (byte)((e >> 8) & 0xFF);
+
+            data[idx++] = (byte)(e & 0xFF);
+
+        }
+
+        return data;
+
+    }
+
+
+
+    /* =======================================================
+
+       MAIN
+
+       ======================================================= */
 
     public static void main(String[] args) throws Exception {
 
@@ -68,17 +170,19 @@ public class Receiver {
 
         DatagramSocket socket = new DatagramSocket(port);
 
+        socket.setReceiveBufferSize(4 * 1024 * 1024);
+
 
 
         byte[] buffer = new byte[2048];
 
 
 
-        System.out.println("Receiver en écoute...");
+        System.out.println("Receiver avancé en écoute...");
 
 
 
-        /**************** HANDSHAKE ****************/
+        /* ================== HANDSHAKE ===================== */
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
@@ -96,25 +200,39 @@ public class Receiver {
 
 
 
+        expectedSeq = seqNext(syn.seq);
+
+
+
         Packet synAck = new Packet();
 
         synAck.seq = 0;
 
-        synAck.ack = seqNext(syn.seq);
+        synAck.ack = expectedSeq;
 
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{ (byte) bufferMax };
+
+
+        int rwndBytes = RX_BUFFER_BYTES - rxUsed;
+
+        synAck.data = new byte[]{
+
+                (byte)((rwndBytes >> 8) & 0xFF),
+
+                (byte)(rwndBytes & 0xFF)
+
+        };
 
 
 
-        byte[] synAckRaw = PacketEncoder.encode(synAck);
+        socket.send(new DatagramPacket(
 
-        socket.send(new DatagramPacket(synAckRaw, synAckRaw.length, lastAddr, lastPort));
+                PacketEncoder.encode(synAck),
 
+                PacketEncoder.encode(synAck).length,
 
-
-        expectedSeq = seqNext(syn.seq);
+                lastAddr, lastPort));
 
 
 
@@ -122,41 +240,35 @@ public class Receiver {
 
 
 
-        /**************** THREAD consommation + adaptation ****************/
+        /* ================== THREAD APPLICATION ===================== */
 
-        Thread consumer = new Thread(() -> {
+        Thread appConsumer = new Thread(() -> {
 
             while (true) {
 
-                try { Thread.sleep(CONSUME_MS); } catch (Exception ignored) {}
-
-                // consommer plusieurs segments par tick
-
-                int toConsume = 4; // ajuster 2..8 selon tes tests
-
-                while (toConsume-- > 0 && bufferUsed > 0) bufferUsed--;
+                try { Thread.sleep(APP_CONSUME_MS); } catch (Exception ignored) {}
 
 
 
-                // adaptation 16..255 inchangée
+                int n = APP_CONSUME_AMOUNT;
 
-                if (bufferUsed < bufferMax / 4 && bufferMax < 255) bufferMax++;
+                while (n-- > 0 && appBufferUsed > 0) {
 
-                else if (bufferUsed > 3 * bufferMax / 4 && bufferMax > 16) bufferMax--;
+                    appBufferUsed--;
+
+                }
 
             }
 
         });
 
+        appConsumer.setDaemon(true);
 
-
-        consumer.setDaemon(true);
-
-        consumer.start();
+        appConsumer.start();
 
 
 
-        /**************** ACK périodiques ****************/
+        /* ================== ACK PÉRIODIQUE ===================== */
 
         Timer ackTimer = new Timer(true);
 
@@ -166,31 +278,33 @@ public class Receiver {
 
             public void run() {
 
-                if (lastAddr == null || lastPort == -1) return;
+                if (lastAddr == null) return;
 
 
 
-                int rwnd = Math.max(0, bufferMax - bufferUsed);
+                int rwndBytes = Math.max(0, RX_BUFFER_BYTES - rxUsed);
+
+
+
+                Packet ack = new Packet();
+
+                ack.flags = Packet.FLAG_ACK;
+
+                ack.ack = expectedSeq;
+
+
+
+                List<int[]> sack = computeSackBlocks();
+
+                ack.data = buildAckData(rwndBytes, sack);
 
 
 
                 try {
 
-                    Packet ack = new Packet();
-
-                    ack.flags = Packet.FLAG_ACK;
-
-                    ack.ack = expectedSeq;
-
-                    ack.data = new byte[]{ (byte) rwnd };
-
                     byte[] raw = PacketEncoder.encode(ack);
 
-
-
                     socket.send(new DatagramPacket(raw, raw.length, lastAddr, lastPort));
-
-                    //System.out.println("[ACK périodique] ack=" + expectedSeq + " rwnd=" + rwnd);
 
                 } catch (Exception ignored) {}
 
@@ -200,7 +314,7 @@ public class Receiver {
 
 
 
-        /**************** BOUCLE PRINCIPALE ****************/
+        /* ================== BOUCLE PRINCIPALE ===================== */
 
         while (true) {
 
@@ -222,81 +336,211 @@ public class Receiver {
 
 
 
-            /**************** LOGIQUE HORS‑ORDRE ****************/
+            int size = p.data.length;
+
+
+
+            // Écriture dans le buffer réseau (rxUsed)
+
+            if (rxUsed + size > RX_BUFFER_BYTES) {
+
+                // Buffer réseau plein → ignorer (flow control fera son job)
+
+                continue;
+
+            }
+
+
+
+            // Cas 1 : paquet attendu → délivrer immédiatement
 
             if (p.seq == expectedSeq) {
 
-                // bon paquet → consommer
+                deliverPacket(p);
 
                 expectedSeq = seqNext(expectedSeq);
 
-                bufferUsed++;
 
 
-
-                // vider les paquets suivants en attente
+                // vider tout l’hors‑ordre consécutif
 
                 while (outOfOrder.containsKey(expectedSeq)) {
 
-                    outOfOrder.remove(expectedSeq);
+                    byte[] chunk = outOfOrder.remove(expectedSeq);
+
+                    deliverData(chunk);
 
                     expectedSeq = seqNext(expectedSeq);
-
-                    bufferUsed++;
 
                 }
 
             }
 
+            // Cas 2 : hors‑ordre futur → stocker
+
             else if (seqGreater(p.seq, expectedSeq)) {
 
-                // futur → stocker hors ordre
+                outOfOrder.put(p.seq, p.data);
 
-                outOfOrder.put(p.seq, p);
+                rxUsed += size;
+
+            }
+
+            // Cas 3 : déjà reçu → ignorer
+
+            else {
+
+                // nothing
+
+            }
+
+
+
+            // ACK immédiat avec SACK
+
+            sendAck(socket);
+
+        }
+
+    }
+
+
+
+    /* =======================================================
+
+       RÉASSEMBLAGE & LIVRAISON
+
+       ======================================================= */
+
+
+
+    static void deliverPacket(Packet p) {
+
+        deliverData(p.data);
+
+    }
+
+
+
+    static void deliverData(byte[] data) {
+
+        // Décrément le buffer réseau
+
+        rxUsed -= data.length;
+
+        if (rxUsed < 0) rxUsed = 0;
+
+
+
+        // Buffer “application”
+
+        appBufferUsed += 1;
+
+        if (appBufferUsed > 1000000) appBufferUsed = 1000000; // limite de sécurité
+
+    }
+
+
+
+    /* =======================================================
+
+       CALCUL DES BLOCS SACK
+
+       ======================================================= */
+
+
+
+    static List<int[]> computeSackBlocks() {
+
+        List<int[]> blocks = new ArrayList<>();
+
+
+
+        if (outOfOrder.isEmpty()) return blocks;
+
+
+
+        Integer prevStart = null;
+
+        Integer prevEnd = null;
+
+
+
+        for (Integer seq : outOfOrder.keySet()) {
+
+
+
+            if (prevStart == null) {
+
+                prevStart = seq;
+
+                prevEnd = seq;
+
+            }
+
+            else if (seq == seqNext(prevEnd)) {
+
+                prevEnd = seq;
 
             }
 
             else {
 
-                // paquet déjà reçu → rien
+                blocks.add(new int[]{prevStart, prevEnd});
+
+                prevStart = seq;
+
+                prevEnd = seq;
 
             }
 
-
-
-            /**************** ENVOI DE L’ACK IMMÉDIAT ****************/
-
-            int rwnd = Math.max(0, bufferMax - bufferUsed);
-
-
-
-            Packet ack = new Packet();
-
-            ack.flags = Packet.FLAG_ACK;
-
-            ack.ack = expectedSeq;                // ACK cumulatif
-
-            ack.data = new byte[]{ (byte) rwnd }; // fenêtre annoncée
-
-
-
-            byte[] ackRaw = PacketEncoder.encode(ack);
-
-            socket.send(new DatagramPacket(ackRaw, ackRaw.length, lastAddr, lastPort));
-
-
-
-            System.out.println("ACK envoyé | ack=" + ack.ack +
-
-                    " | rwnd=" + rwnd +
-
-                    " | bufUsed=" + bufferUsed +
-
-                    " | bufMax=" + bufferMax +
-
-                    " | outOfOrder=" + outOfOrder.size());
-
         }
+
+
+
+        blocks.add(new int[]{prevStart, prevEnd});
+
+
+
+        return blocks;
+
+    }
+
+
+
+    /* =======================================================
+
+       ENVOI D’UN ACK IMMÉDIAT
+
+       ======================================================= */
+
+
+
+    static void sendAck(DatagramSocket socket) throws Exception {
+
+
+
+        int rwndBytes = Math.max(0, RX_BUFFER_BYTES - rxUsed);
+
+
+
+        Packet ack = new Packet();
+
+        ack.flags = Packet.FLAG_ACK;
+
+        ack.ack = expectedSeq;
+
+
+
+        List<int[]> sack = computeSackBlocks();
+
+        ack.data = buildAckData(rwndBytes, sack);
+
+
+
+        byte[] raw = PacketEncoder.encode(ack);
+
+        socket.send(new DatagramPacket(raw, raw.length, lastAddr, lastPort));
 
     }
 
