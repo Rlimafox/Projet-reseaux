@@ -1,101 +1,52 @@
-import java.util.*;
-
-
+import java.nio.*;
 
 public class PacketEncoder {
 
-
-
-    /**
-
-     * Format simple :
-
-     *  seq     (2 bytes)
-
-     *  ack     (2 bytes)
-
-     *  flags   (1 byte)
-
-     *  length  (1 byte)  <-- longueur de data, max 255
-
-     *  data[]  (length bytes)
-
-     */
+    // Header :
+    // seq (4) | ack (4) | flags (1) | len (2) = 11 octets
+    private static final int HEADER_SIZE = 11;
 
     public static byte[] encode(Packet p) {
+        int dataLength = (p.data == null) ? 0 : p.data.length;
+        int totalLength = HEADER_SIZE + dataLength;
 
-        if (p.data == null) p.data = new byte[0];
+        ByteBuffer buffer = ByteBuffer.allocate(totalLength);
+        buffer.order(ByteOrder.BIG_ENDIAN);
 
-        int len = p.data.length;
+        // ----- HEADER -----
+        buffer.putInt(p.seq);          // 4 octets
+        buffer.putInt(p.ack);          // 4 octets
+        buffer.put(p.flags);           // 1 octet
+        buffer.putShort((short) dataLength); // 2 octets
 
-        if (len > 255) throw new IllegalArgumentException("data too large (max 255)");
+        // ----- DATA -----
+        if (dataLength > 0) {
+            buffer.put(p.data);
+        }
 
-
-
-        byte[] out = new byte[6 + len];
-
-
-
-        out[0] = (byte)((p.seq >> 8) & 0xFF);
-
-        out[1] = (byte)(p.seq & 0xFF);
-
-
-
-        out[2] = (byte)((p.ack >> 8) & 0xFF);
-
-        out[3] = (byte)(p.ack & 0xFF);
-
-
-
-        out[4] = p.flags;
-
-        out[5] = (byte)(len & 0xFF);
-
-
-
-        System.arraycopy(p.data, 0, out, 6, len);
-
-
-
-        return out;
-
+        return buffer.array();
     }
 
-
-
     public static Packet decode(byte[] raw) {
-
-        if (raw.length < 6) throw new IllegalArgumentException("Invalid packet");
-
-
+        ByteBuffer buffer = ByteBuffer.wrap(raw);
+        buffer.order(ByteOrder.BIG_ENDIAN);
 
         Packet p = new Packet();
 
+        // ----- HEADER -----
+        p.seq = buffer.getInt();
+        p.ack = buffer.getInt();
+        p.flags = buffer.get();
+        int dataLength = Short.toUnsignedInt(buffer.getShort());
 
-
-        p.seq = ((raw[0] & 0xFF) << 8) | (raw[1] & 0xFF);
-
-        p.ack = ((raw[2] & 0xFF) << 8) | (raw[3] & 0xFF);
-
-
-
-        p.flags = raw[4];
-
-        int len = raw[5] & 0xFF;
-
-
-
-        if (len > raw.length - 6) throw new IllegalArgumentException("Invalid length");
-
-
-
-        p.data = Arrays.copyOfRange(raw, 6, 6 + len);
-
-
+        // ----- DATA -----
+        if (dataLength > 0) {
+            p.data = new byte[dataLength];
+            buffer.get(p.data);
+        } else {
+            p.data = new byte[0];
+        }
 
         return p;
-
     }
-
 }
