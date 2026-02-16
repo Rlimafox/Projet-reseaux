@@ -8,9 +8,13 @@ public class Receiver {
 
 
 
-    static final int BUFFER_MAX = 32;
+    static int bufferMax = 32;        // taille de fenêtre dynamique
 
     static final int SEQ_MOD = 65536;
+
+
+
+    static volatile int bufferUsed = 0;
 
 
 
@@ -36,15 +40,55 @@ public class Receiver {
 
 
 
-        int expectedSeq;
-
-        int bufferUsed = 0;
-
-
-
         System.out.println("Receiver en écoute...");
 
 
+
+        // ======= Thread de consommation ========
+
+        Thread consumer = new Thread(() -> {
+
+            while (true) {
+
+                try {
+
+                    Thread.sleep(20); // consomme 50 éléments par seconde
+
+                } catch (Exception ignored) {}
+
+
+
+                if (bufferUsed > 0)
+
+                    bufferUsed--;
+
+
+
+                // ajustement dynamique de la taille de la fenêtre
+
+                if (bufferUsed < bufferMax / 4 && bufferMax < 256) {
+
+                    bufferMax++;
+
+                }
+
+                else if (bufferUsed > 3 * bufferMax / 4 && bufferMax > 16) {
+
+                    bufferMax--;
+
+                }
+
+            }
+
+        });
+
+        consumer.setDaemon(true);
+
+        consumer.start();
+
+
+
+        // ===== HANDSHAKE =====
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
@@ -64,13 +108,11 @@ public class Receiver {
 
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{ (byte) BUFFER_MAX };
+        synAck.data = new byte[]{ (byte) bufferMax };
 
 
 
-        socket.send(new DatagramPacket(
-
-                PacketEncoder.encode(synAck),
+        socket.send(new DatagramPacket(PacketEncoder.encode(synAck),
 
                 PacketEncoder.encode(synAck).length,
 
@@ -80,13 +122,15 @@ public class Receiver {
 
 
 
-        expectedSeq = seqNext(syn.seq);
+        int expectedSeq = seqNext(syn.seq);
 
 
 
         System.out.println("Connexion établie");
 
 
+
+        // ===== DATA LOOP =====
 
         while (true) {
 
@@ -112,13 +156,7 @@ public class Receiver {
 
 
 
-            if (bufferUsed > 0)
-
-                bufferUsed--;
-
-
-
-            int rwnd = BUFFER_MAX - bufferUsed;
+            int rwnd = Math.max(0, bufferMax - bufferUsed);
 
 
 
@@ -132,9 +170,7 @@ public class Receiver {
 
 
 
-            socket.send(new DatagramPacket(
-
-                    PacketEncoder.encode(ack),
+            socket.send(new DatagramPacket(PacketEncoder.encode(ack),
 
                     PacketEncoder.encode(ack).length,
 
@@ -144,8 +180,10 @@ public class Receiver {
 
 
 
-            System.out.println("ACK envoyé | ack=" + ack.ack + " | rwnd=" + rwnd);
+            System.out.println("ACK envoyé | ack=" + ack.ack + " | rwnd=" + rwnd + " | bufMax=" + bufferMax);
 
         }
+
     }
+
 }
