@@ -8,17 +8,19 @@ public class Receiver {
 
 
 
-    static int bufferMax = 32;        // taille de fenêtre dynamique
+    static int bufferMax = 32;               // fenêtre dynamique initiale
 
     static final int SEQ_MOD = 65536;
 
 
 
+    // Nombre d'éléments réellement "occupés"
+
     static volatile int bufferUsed = 0;
 
 
 
-    public static int seqNext(int seq) {
+    static int seqNext(int seq) {
 
         return (seq + 1) % SEQ_MOD;
 
@@ -44,7 +46,11 @@ public class Receiver {
 
 
 
-        // ======= Thread de consommation ========
+        /************************************************************
+
+         *          THREAD DE CONSOMMATION (COMME UNE APP)
+
+         ************************************************************/
 
         Thread consumer = new Thread(() -> {
 
@@ -52,7 +58,7 @@ public class Receiver {
 
                 try {
 
-                    Thread.sleep(20); // consomme 50 éléments par seconde
+                    Thread.sleep(20);   // Consomme ~50 éléments/s
 
                 } catch (Exception ignored) {}
 
@@ -64,9 +70,9 @@ public class Receiver {
 
 
 
-                // ajustement dynamique de la taille de la fenêtre
+                // Ajustement dynamique de la taille du buffer
 
-                if (bufferUsed < bufferMax / 4 && bufferMax < 256) {
+                if (bufferUsed < bufferMax / 4 && bufferMax < 255) {
 
                     bufferMax++;
 
@@ -88,7 +94,11 @@ public class Receiver {
 
 
 
-        // ===== HANDSHAKE =====
+        /************************************************************
+
+         *                       HANDSHAKE
+
+         ************************************************************/
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
@@ -108,11 +118,13 @@ public class Receiver {
 
         synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{ (byte) bufferMax };
+        synAck.data = new byte[]{ (byte) bufferMax };  // fenêtre annoncée
 
 
 
-        socket.send(new DatagramPacket(PacketEncoder.encode(synAck),
+        socket.send(new DatagramPacket(
+
+                PacketEncoder.encode(synAck),
 
                 PacketEncoder.encode(synAck).length,
 
@@ -130,7 +142,11 @@ public class Receiver {
 
 
 
-        // ===== DATA LOOP =====
+        /************************************************************
+
+         *                    BOUCLE PRINCIPALE
+
+         ************************************************************/
 
         while (true) {
 
@@ -146,6 +162,12 @@ public class Receiver {
 
 
 
+            /************************************************************
+
+             *                     TRAITEMENT
+
+             ************************************************************/
+
             if (p.seq == expectedSeq) {
 
                 expectedSeq = seqNext(expectedSeq);
@@ -156,9 +178,17 @@ public class Receiver {
 
 
 
+            // Toujours calculer la fenêtre restante
+
             int rwnd = Math.max(0, bufferMax - bufferUsed);
 
 
+
+            /************************************************************
+
+             *                       ENVOI DE L'ACK
+
+             ************************************************************/
 
             Packet ack = new Packet();
 
@@ -170,7 +200,9 @@ public class Receiver {
 
 
 
-            socket.send(new DatagramPacket(PacketEncoder.encode(ack),
+            socket.send(new DatagramPacket(
+
+                    PacketEncoder.encode(ack),
 
                     PacketEncoder.encode(ack).length,
 
@@ -180,7 +212,15 @@ public class Receiver {
 
 
 
-            System.out.println("ACK envoyé | ack=" + ack.ack + " | rwnd=" + rwnd + " | bufMax=" + bufferMax);
+            System.out.println(
+
+                    "ACK envoyé | ack=" + ack.ack +
+
+                            " | rwnd=" + rwnd +
+
+                            " | bufUsed=" + bufferUsed +
+
+                            " | bufMax=" + bufferMax);
 
         }
 

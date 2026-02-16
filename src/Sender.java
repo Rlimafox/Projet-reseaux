@@ -16,9 +16,67 @@ public class Sender {
 
 
 
+    /************************************************************
+
+     *        ---   UTILITAIRES POUR LES SÉQUENCES   ---
+
+     ************************************************************/
+
     static boolean seqLess(int a, int b) {
 
         return ((b - a + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2);
+
+    }
+
+
+
+    static int distFromBase(int base, int seq) {
+
+        return (seq - base + SEQ_MOD) % SEQ_MOD;
+
+    }
+
+
+
+    static int findOldestRelativeToBase(Set<Integer> keys, int base) {
+
+        int best = -1;
+
+        int bestDist = SEQ_MOD;
+
+        for (int k : keys) {
+
+            int d = distFromBase(base, k);
+
+            if (d > 0 && d < bestDist) {
+
+                bestDist = d;
+
+                best = k;
+
+            }
+
+        }
+
+        return best;
+
+    }
+
+
+
+    static void retransmitIfPresent(DatagramSocket socket, InetAddress addr, int port,
+
+                                    Map<Integer, byte[]> inFlight, int seq) throws Exception {
+
+        byte[] raw = inFlight.get(seq);
+
+        if (raw != null) {
+
+            socket.send(new DatagramPacket(raw, raw.length, addr, port));
+
+            System.out.println("[RETX] seq=" + seq);
+
+        }
 
     }
 
@@ -44,6 +102,12 @@ public class Sender {
 
 
 
+    /************************************************************
+
+     *                        MAIN
+
+     ************************************************************/
+
     public static void main(String[] args) throws Exception {
 
 
@@ -68,8 +132,6 @@ public class Sender {
 
 
 
-        // Congestion control parameters
-
         int cwnd = 1;
 
         int ssthresh = 32;
@@ -92,7 +154,11 @@ public class Sender {
 
 
 
-        // ====== HANDSHAKE ======
+        /************************************************************
+
+         *                        HANDSHAKE
+
+         ************************************************************/
 
         int baseSeq = new Random().nextInt(SEQ_MOD);
 
@@ -134,6 +200,12 @@ public class Sender {
 
 
 
+        /************************************************************
+
+         *                      BOUCLE PRINCIPALE
+
+         ************************************************************/
+
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
 
@@ -142,21 +214,39 @@ public class Sender {
 
 
 
-            // ====== ZERO-WINDOW PROBING ======
+            /************************************************************
+
+             *           ZERO-WINDOW PROBE — RETX ciblée
+
+             ************************************************************/
 
             if (rwnd == 0 && !inFlight.isEmpty()) {
 
-                int first = inFlight.firstKey();
+                int target = inFlight.containsKey(lastAck)
 
-                socket.send(new DatagramPacket(inFlight.get(first), inFlight.get(first).length, addr, port));
+                        ? lastAck
 
-                System.out.println("[PROBE] seq=" + first);
+                        : findOldestRelativeToBase(inFlight.keySet(), lastAck);
+
+
+
+                if (target != -1) {
+
+                    retransmitIfPresent(socket, addr, port, inFlight, target);
+
+                    System.out.println("[PROBE] seq=" + target);
+
+                }
 
             }
 
 
 
-            // ====== ENVOI DE PAQUETS ======
+            /************************************************************
+
+             *                  ENVOI DES PAQUETS
+
+             ************************************************************/
 
             while (offset < fileData.length && inFlight.size() < window) {
 
@@ -194,6 +284,12 @@ public class Sender {
 
 
 
+            /************************************************************
+
+             *                  TRAITEMENT DES ACKS
+
+             ************************************************************/
+
             try {
 
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
@@ -214,7 +310,11 @@ public class Sender {
 
                 int ackSeq = ack.ack;
 
-                rwnd = ack.data[0] & 0xFF;
+
+
+                if (ack.data != null && ack.data.length > 0)
+
+                    rwnd = ack.data[0] & 0xFF;
 
 
 
@@ -232,7 +332,11 @@ public class Sender {
 
 
 
-                // ====== NETTOYAGE DE LA FENÊTRE ======
+                /**********************************************
+
+                 *  NETTOYAGE DE LA FENÊTRE
+
+                 **********************************************/
 
                 int removed = 0;
 
@@ -256,11 +360,29 @@ public class Sender {
 
 
 
-                // ====== CONTRÔLE DE CONGESTION ======
+                /**********************************************
+
+                 *        FAST RETRANSMIT (3 dupACK)
+
+                 **********************************************/
 
                 if (dupAckCount == 3) {
 
-                    // Fast Recovery
+
+
+                    int target = inFlight.containsKey(lastAck)
+
+                            ? lastAck
+
+                            : findOldestRelativeToBase(inFlight.keySet(), lastAck);
+
+
+
+                    if (target != -1)
+
+                        retransmitIfPresent(socket, addr, port, inFlight, target);
+
+
 
                     ssthresh = Math.max(2, cwnd / 2);
 
@@ -268,15 +390,21 @@ public class Sender {
 
                 }
 
+                /**********************************************
+
+                 *      CONTRÔLE DE CONGESTION NORMAL
+
+                 **********************************************/
+
                 else if (removed > 0) {
 
                     if (cwnd < ssthresh)
 
-                        cwnd += removed; // Slow start
+                        cwnd += removed;
 
                     else
 
-                        cwnd += 1; // Congestion avoidance
+                        cwnd += 1;
 
                 }
 
@@ -284,13 +412,19 @@ public class Sender {
 
                 printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
 
-
-
-            } catch (SocketTimeoutException e) {
+            }
 
 
 
-                // TIMEOUT → Reset cwnd
+            /************************************************************
+
+             *                     TIMEOUT
+
+             ************************************************************/
+
+            catch (SocketTimeoutException e) {
+
+
 
                 ssthresh = Math.max(2, cwnd / 2);
 
@@ -306,9 +440,19 @@ public class Sender {
 
                 if (!inFlight.isEmpty()) {
 
-                    int first = inFlight.firstKey();
 
-                    socket.send(new DatagramPacket(inFlight.get(first), inFlight.get(first).length, addr, port));
+
+                    int target = inFlight.containsKey(lastAck)
+
+                            ? lastAck
+
+                            : findOldestRelativeToBase(inFlight.keySet(), lastAck);
+
+
+
+                    if (target != -1)
+
+                        retransmitIfPresent(socket, addr, port, inFlight, target);
 
                 }
 
