@@ -1,51 +1,85 @@
-import java.nio.*;
+import java.util.*;
+
+
 
 public class PacketEncoder {
 
-    // Header :
-    // seq (4) | ack (4) | flags (1) | len (2) = 11 octets
-    private static final int HEADER_SIZE = 11;
+    /** Encode un Packet en tableau d’octets (v3 - header fixe + payload variable) */
 
     public static byte[] encode(Packet p) {
-        int dataLength = (p.data == null) ? 0 : p.data.length;
-        int totalLength = HEADER_SIZE + dataLength;
 
-        ByteBuffer buffer = ByteBuffer.allocate(totalLength);
-        buffer.order(ByteOrder.BIG_ENDIAN);
+        if (p.data == null) p.data = new byte[0];
 
-        // ----- HEADER -----
-        buffer.putInt(p.seq);          // 4 octets
-        buffer.putInt(p.ack);          // 4 octets
-        buffer.put(p.flags);           // 1 octet
-        buffer.putShort((short) dataLength); // 2 octets
+        int dataLen = p.data.length;
 
-        // ----- DATA -----
-        if (dataLength > 0) {
-            buffer.put(p.data);
-        }
+        int total = 8 + dataLen; // 8 = header v3
 
-        return buffer.array();
+        byte[] out = new byte[total];
+
+        // seq (2 bytes)
+
+        out[0] = (byte)((p.seq >> 8) & 0xFF);
+
+        out[1] = (byte)(p.seq & 0xFF);
+
+        // ack (2 bytes)
+
+        out[2] = (byte)((p.ack >> 8) & 0xFF);
+
+        out[3] = (byte)(p.ack & 0xFF);
+
+        // flags (1 byte)
+
+        out[4] = p.flags;
+
+        // reserved (1 byte) = 0
+
+        out[5] = 0;
+
+        // dataLen (2 bytes)
+
+        out[6] = (byte)((dataLen >> 8) & 0xFF);
+        out[7] = (byte)(dataLen & 0xFF);
+
+        // payload
+        System.arraycopy(p.data, 0, out, 8, dataLen);
+        return out;
     }
 
-    public static Packet decode(byte[] raw) {
-        ByteBuffer buffer = ByteBuffer.wrap(raw);
-        buffer.order(ByteOrder.BIG_ENDIAN);
+
+    /** Decode un tableau d’octets en Packet (v3) */
+
+    public static Packet decode(byte[] buf) {
+
+        if (buf == null || buf.length < 8) throw new IllegalArgumentException("Paquet trop petit pour Packet v3");
 
         Packet p = new Packet();
 
-        // ----- HEADER -----
-        p.seq = buffer.getInt();
-        p.ack = buffer.getInt();
-        p.flags = buffer.get();
-        int dataLength = Short.toUnsignedInt(buffer.getShort());
+        // seq
 
-        // ----- DATA -----
-        if (dataLength > 0) {
-            p.data = new byte[dataLength];
-            buffer.get(p.data);
-        } else {
-            p.data = new byte[0];
+        p.seq = ((buf[0] & 0xFF) << 8) | (buf[1] & 0xFF);
+
+        // ack
+
+        p.ack = ((buf[2] & 0xFF) << 8) | (buf[3] & 0xFF);
+
+        // flags
+
+        p.flags = buf[4];
+
+        // reserved = buf[5], ignoré
+
+        // dataLen
+
+        int dataLen = ((buf[6] & 0xFF) << 8) | (buf[7] & 0xFF);
+
+        if (dataLen < 0 || dataLen > buf.length - 8) {
+
+            throw new IllegalArgumentException("dataLen incohérent : " + dataLen);
+
         }
+
+        p.data = Arrays.copyOfRange(buf, 8, 8 + dataLen);
 
         return p;
     }
