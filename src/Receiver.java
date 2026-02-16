@@ -8,29 +8,37 @@ public class Receiver {
 
 
 
-    // --- Paramètres adaptatifs ---
-
-    static volatile int bufferMax = 32;      // fenêtre annoncée (dynamique, 16..255)
-
-    static volatile int bufferUsed = 0;      // occupation (en "segments")
-
     static final int SEQ_MOD = 65536;
 
 
 
-    // Consommation "app" (~50 segments/s)
+    // fenêtre annoncée : dynamique (limitée à 255 car 1 octet dans les ACK)
 
-    static final int CONSUME_INTERVAL_MS = 20;
+    static volatile int bufferMax = 32;
+
+    static volatile int bufferUsed = 0;
 
 
 
-    // ACK périodiques pour éviter les blocages (dupACKs réguliers)
+    // Hors‑ordre : stockage temporaire
+
+    static final Map<Integer, Packet> outOfOrder = new HashMap<>();
+
+
+
+    // Consommation simulée (~50 segments/s)
+
+    static final int CONSUME_MS = 20;
+
+
+
+    // ACK périodiques pour éviter blocages
 
     static final int ACK_PERIOD_MS = 100;
 
 
 
-    // Adresse/port du dernier expéditeur (pour ACK périodiques)
+    static volatile int expectedSeq;
 
     static volatile InetAddress lastAddr = null;
 
@@ -38,21 +46,23 @@ public class Receiver {
 
 
 
-    // Prochain numéro de séquence attendu
+    /*************** Utils modulo séquences ***************/
 
-    static volatile int expectedSeq;
+    static int seqNext(int seq) { return (seq + 1) % SEQ_MOD; }
 
 
 
-    static int seqNext(int seq) {
+    static boolean seqGreater(int a, int b) {
 
-        return (seq + 1) % SEQ_MOD;
+        return ((a - b + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2);
 
     }
 
 
 
     public static void main(String[] args) throws Exception {
+
+
 
         int port = Integer.parseInt(args[0]);
 
@@ -68,7 +78,7 @@ public class Receiver {
 
 
 
-        /******************** HANDSHAKE ********************/
+        /**************** HANDSHAKE ****************/
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
@@ -76,7 +86,7 @@ public class Receiver {
 
 
 
-        lastAddr = dp.getAddress();  // mémorise l'expéditeur
+        lastAddr = dp.getAddress();
 
         lastPort = dp.getPort();
 
@@ -92,9 +102,9 @@ public class Receiver {
 
         synAck.ack = seqNext(syn.seq);
 
-        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{ (byte) bufferMax }; // annonce fenêtre initiale
+        synAck.data = new byte[]{ (byte) bufferMax };
 
 
 
@@ -112,41 +122,33 @@ public class Receiver {
 
 
 
-        /******************** Thread "application" : consommation + adaptation ********************/
+        /**************** THREAD consommation + adaptation ****************/
 
         Thread consumer = new Thread(() -> {
 
             while (true) {
 
-                try {
-
-                    Thread.sleep(CONSUME_INTERVAL_MS);
-
-                } catch (InterruptedException ignored) {}
+                try { Thread.sleep(CONSUME_MS); } catch (Exception ignored) {}
 
 
 
-                // Simule la consommation de l'app
+                // réduire l’occupation
 
                 if (bufferUsed > 0) bufferUsed--;
 
 
 
-                // Adaptation simple (bornes : 16..255 car rwnd tient sur 1 octet)
+                // adaptation simple 16..255
 
-                if (bufferUsed < bufferMax / 4 && bufferMax < 255) {
+                if (bufferUsed < bufferMax / 4 && bufferMax < 255) bufferMax++;
 
-                    bufferMax++;
-
-                } else if (bufferUsed > (3 * bufferMax) / 4 && bufferMax > 16) {
-
-                    bufferMax--;
-
-                }
+                else if (bufferUsed > 3 * bufferMax / 4 && bufferMax > 16) bufferMax--;
 
             }
 
         });
+
+
 
         consumer.setDaemon(true);
 
@@ -154,7 +156,7 @@ public class Receiver {
 
 
 
-        /******************** Timer d'ACK périodiques ********************/
+        /**************** ACK périodiques ****************/
 
         Timer ackTimer = new Timer(true);
 
@@ -163,8 +165,6 @@ public class Receiver {
             @Override
 
             public void run() {
-
-                // On ne peut rien envoyer tant qu'on n'a pas l'adresse/port de l'émetteur
 
                 if (lastAddr == null || lastPort == -1) return;
 
@@ -180,21 +180,17 @@ public class Receiver {
 
                     ack.flags = Packet.FLAG_ACK;
 
-                    ack.ack  = expectedSeq;                // prochain attendu (cum ACK)
+                    ack.ack = expectedSeq;
 
-                    ack.data = new byte[]{ (byte) rwnd };  // fenêtre annoncée (0..255)
-
-
+                    ack.data = new byte[]{ (byte) rwnd };
 
                     byte[] raw = PacketEncoder.encode(ack);
 
-                    DatagramPacket dpAck = new DatagramPacket(raw, raw.length, lastAddr, lastPort);
-
-                    socket.send(dpAck);
 
 
+                    socket.send(new DatagramPacket(raw, raw.length, lastAddr, lastPort));
 
-                    // (Log optionnel) System.out.println("[ACK périodique] ack=" + ack.ack + " | rwnd=" + rwnd);
+                    //System.out.println("[ACK périodique] ack=" + expectedSeq + " rwnd=" + rwnd);
 
                 } catch (Exception ignored) {}
 
@@ -204,17 +200,17 @@ public class Receiver {
 
 
 
-        /******************** BOUCLE PRINCIPALE ********************/
+        /**************** BOUCLE PRINCIPALE ****************/
 
         while (true) {
+
+
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
 
             socket.receive(dpData);
 
 
-
-            // Mémorise à chaque paquet (utile si l'IP/port change, ou au démarrage)
 
             lastAddr = dpData.getAddress();
 
@@ -226,21 +222,49 @@ public class Receiver {
 
 
 
-            // Go-Back-N strict : on n'accepte que le prochain attendu
+            /**************** LOGIQUE HORS‑ORDRE ****************/
 
             if (p.seq == expectedSeq) {
+
+                // bon paquet → consommer
 
                 expectedSeq = seqNext(expectedSeq);
 
                 bufferUsed++;
 
+
+
+                // vider les paquets suivants en attente
+
+                while (outOfOrder.containsKey(expectedSeq)) {
+
+                    outOfOrder.remove(expectedSeq);
+
+                    expectedSeq = seqNext(expectedSeq);
+
+                    bufferUsed++;
+
+                }
+
             }
 
-            // sinon : on jette, mais on renverra l'ACK "expectedSeq" (dupACK) juste après
+            else if (seqGreater(p.seq, expectedSeq)) {
+
+                // futur → stocker hors ordre
+
+                outOfOrder.put(p.seq, p);
+
+            }
+
+            else {
+
+                // paquet déjà reçu → rien
+
+            }
 
 
 
-            // Calcule la fenêtre restante et envoie l'ACK immédiatement
+            /**************** ENVOI DE L’ACK IMMÉDIAT ****************/
 
             int rwnd = Math.max(0, bufferMax - bufferUsed);
 
@@ -250,17 +274,15 @@ public class Receiver {
 
             ack.flags = Packet.FLAG_ACK;
 
-            ack.ack = expectedSeq;                 // ACK cumulatif = prochain attendu
+            ack.ack = expectedSeq;                // ACK cumulatif
 
-            ack.data = new byte[]{ (byte) rwnd };  // fenêtre annoncée
+            ack.data = new byte[]{ (byte) rwnd }; // fenêtre annoncée
 
 
 
             byte[] ackRaw = PacketEncoder.encode(ack);
 
-            DatagramPacket dpAck = new DatagramPacket(ackRaw, ackRaw.length, lastAddr, lastPort);
-
-            socket.send(dpAck);
+            socket.send(new DatagramPacket(ackRaw, ackRaw.length, lastAddr, lastPort));
 
 
 
@@ -270,7 +292,9 @@ public class Receiver {
 
                     " | bufUsed=" + bufferUsed +
 
-                    " | bufMax=" + bufferMax);
+                    " | bufMax=" + bufferMax +
+
+                    " | outOfOrder=" + outOfOrder.size());
 
         }
 
