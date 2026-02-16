@@ -28,13 +28,13 @@ public class Receiver {
 
     // Consommation simulée (~50 segments/s)
 
-    static final int CONSUME_MS = 20;
+    static final int CONSUME_MS = 2;
 
 
 
     // ACK périodiques pour éviter blocages
 
-    static final int ACK_PERIOD_MS = 100;
+    static final int ACK_PERIOD_MS = 20;
 
 
 
@@ -130,15 +130,15 @@ public class Receiver {
 
                 try { Thread.sleep(CONSUME_MS); } catch (Exception ignored) {}
 
+                // consommer plusieurs segments par tick
+
+                int toConsume = 4; // ajuster 2..8 selon tes tests
+
+                while (toConsume-- > 0 && bufferUsed > 0) bufferUsed--;
 
 
-                // réduire l’occupation
 
-                if (bufferUsed > 0) bufferUsed--;
-
-
-
-                // adaptation simple 16..255
+                // adaptation 16..255 inchangée
 
                 if (bufferUsed < bufferMax / 4 && bufferMax < 255) bufferMax++;
 

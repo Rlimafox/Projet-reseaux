@@ -10,7 +10,7 @@ public class Sender {
 
 
 
-    static final int MAX_DATA = 1024;
+    static final int MAX_DATA = 1400;
 
     static final int SEQ_MOD = 65536;
 
@@ -69,6 +69,9 @@ public class Sender {
     static void retransmitIfPresent(DatagramSocket socket, InetAddress addr, int port,
 
                                     Map<Integer, byte[]> inFlight, int seq) throws Exception {
+        socket.setReceiveBufferSize(4 * 1024 * 1024);
+
+        socket.setSendBufferSize(4 * 1024 * 1024);
 
         byte[] raw = inFlight.get(seq);
 
@@ -271,7 +274,7 @@ public class Sender {
 
 
             // Envoi tant qu'il reste de la place dans la fenêtre effective
-
+            int sentSinceLastSleep = 0;
             while (offset < fileData.length && inFlight.size() < window) {
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
@@ -299,6 +302,16 @@ public class Sender {
                 offset += size;
 
                 nextSeq = (nextSeq + 1) % SEQ_MOD;
+
+                sentSinceLastSleep++;
+
+                if (sentSinceLastSleep >= 64) { // toutes 64 émissions
+
+                    try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+
+                    sentSinceLastSleep = 0;
+
+                }
 
             }
 
