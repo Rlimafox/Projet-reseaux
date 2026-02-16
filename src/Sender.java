@@ -16,11 +16,15 @@ public class Sender {
 
 
 
-    /************************************************************
+    // --- CONFIG de la rafale Go-Back-N ---
 
-     *        ---   UTILITAIRES POUR LES SÉQUENCES   ---
+    // Nombre max de segments à retransmettre d'affilée lors d'une perte.
 
-     ************************************************************/
+    static final int MAX_RETX_BURST = 8;
+
+
+
+    /****************** Utils séquences ******************/
 
     static boolean seqLess(int a, int b) {
 
@@ -40,9 +44,7 @@ public class Sender {
 
     static int findOldestRelativeToBase(Set<Integer> keys, int base) {
 
-        int best = -1;
-
-        int bestDist = SEQ_MOD;
+        int best = -1, bestDist = SEQ_MOD;
 
         for (int k : keys) {
 
@@ -82,6 +84,56 @@ public class Sender {
 
 
 
+    /*** 🔥 Retransmission en rafale depuis 'base' (lastAck) : Go-Back-N limité ***/
+
+    static void retransmitBurstFrom(DatagramSocket socket, InetAddress addr, int port,
+
+                                    Map<Integer, byte[]> inFlight, int base, int maxCount) throws Exception {
+
+        // On parcourt les clés de inFlight dans l'ordre "modulo" à partir de 'base'
+
+        // et on tente d'en renvoyer jusqu'à maxCount.
+
+        if (inFlight.isEmpty()) return;
+
+
+
+        // 1) Construire une liste triée par distance modulo depuis 'base'
+
+        List<Integer> keys = new ArrayList<>(inFlight.keySet());
+
+        keys.sort(Comparator.comparingInt(k -> distFromBase(base, k)));
+
+
+
+        int sent = 0;
+
+        for (int k : keys) {
+
+            int d = distFromBase(base, k);
+
+            if (d <= 0) continue;               // on ne renvoie pas les anciens déjà ACKés
+
+            retransmitIfPresent(socket, addr, port, inFlight, k);
+
+            sent++;
+
+            if (sent >= maxCount) break;
+
+        }
+
+        if (sent > 0) {
+
+            System.out.println("[RETX-BURST] from=" + base + " count=" + sent);
+
+        }
+
+    }
+
+
+
+    /****************** Logs fenêtre ******************/
+
     static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
 
         int effective = Math.min(cwnd, rwnd);
@@ -101,12 +153,6 @@ public class Sender {
     }
 
 
-
-    /************************************************************
-
-     *                        MAIN
-
-     ************************************************************/
 
     public static void main(String[] args) throws Exception {
 
@@ -148,17 +194,11 @@ public class Sender {
 
         TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
 
-
-
         byte[] buffer = new byte[2048];
 
 
 
-        /************************************************************
-
-         *                        HANDSHAKE
-
-         ************************************************************/
+        // ===== HANDSHAKE =====
 
         int baseSeq = new Random().nextInt(SEQ_MOD);
 
@@ -200,11 +240,7 @@ public class Sender {
 
 
 
-        /************************************************************
-
-         *                      BOUCLE PRINCIPALE
-
-         ************************************************************/
+        // ===== BOUCLE =====
 
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
@@ -214,21 +250,13 @@ public class Sender {
 
 
 
-            /************************************************************
-
-             *           ZERO-WINDOW PROBE — RETX ciblée
-
-             ************************************************************/
+            // Zero-window probe : cibler le prochain attendu
 
             if (rwnd == 0 && !inFlight.isEmpty()) {
 
-                int target = inFlight.containsKey(lastAck)
-
-                        ? lastAck
+                int target = inFlight.containsKey(lastAck) ? lastAck
 
                         : findOldestRelativeToBase(inFlight.keySet(), lastAck);
-
-
 
                 if (target != -1) {
 
@@ -242,15 +270,9 @@ public class Sender {
 
 
 
-            /************************************************************
-
-             *                  ENVOI DES PAQUETS
-
-             ************************************************************/
+            // Envoi tant qu'il reste de la place dans la fenêtre effective
 
             while (offset < fileData.length && inFlight.size() < window) {
-
-
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
 
@@ -274,8 +296,6 @@ public class Sender {
 
                 inFlight.put(nextSeq, raw);
 
-
-
                 offset += size;
 
                 nextSeq = (nextSeq + 1) % SEQ_MOD;
@@ -283,12 +303,6 @@ public class Sender {
             }
 
 
-
-            /************************************************************
-
-             *                  TRAITEMENT DES ACKS
-
-             ************************************************************/
 
             try {
 
@@ -300,17 +314,11 @@ public class Sender {
 
                 Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
 
-
-
-                if ((ack.flags & Packet.FLAG_ACK) == 0)
-
-                    continue;
+                if ((ack.flags & Packet.FLAG_ACK) == 0) continue;
 
 
 
                 int ackSeq = ack.ack;
-
-
 
                 if (ack.data != null && ack.data.length > 0)
 
@@ -318,29 +326,15 @@ public class Sender {
 
 
 
-                if (ackSeq == lastAck)
-
-                    dupAckCount++;
-
-                else
-
-                    dupAckCount = 0;
-
-
+                if (ackSeq == lastAck) dupAckCount++; else dupAckCount = 0;
 
                 lastAck = ackSeq;
 
 
 
-                /**********************************************
-
-                 *  NETTOYAGE DE LA FENÊTRE
-
-                 **********************************************/
+                // Nettoyage inFlight (ACK cumulatif)
 
                 int removed = 0;
-
-
 
                 Iterator<Integer> it = inFlight.keySet().iterator();
 
@@ -360,29 +354,25 @@ public class Sender {
 
 
 
-                /**********************************************
-
-                 *        FAST RETRANSMIT (3 dupACK)
-
-                 **********************************************/
+                // Fast retransmit: 3 dupACK → rafale Go-Back-N
 
                 if (dupAckCount == 3) {
 
-
-
-                    int target = inFlight.containsKey(lastAck)
-
-                            ? lastAck
+                    int target = inFlight.containsKey(lastAck) ? lastAck
 
                             : findOldestRelativeToBase(inFlight.keySet(), lastAck);
 
+                    if (target != -1) {
 
-
-                    if (target != -1)
+                        // on renvoie d'abord le "next expected"
 
                         retransmitIfPresent(socket, addr, port, inFlight, target);
 
+                        // 🔥 puis on renvoie quelques suivants (car le RX a jeté tout l'hors-ordre)
 
+                        retransmitBurstFrom(socket, addr, port, inFlight, lastAck, MAX_RETX_BURST - 1);
+
+                    }
 
                     ssthresh = Math.max(2, cwnd / 2);
 
@@ -390,21 +380,11 @@ public class Sender {
 
                 }
 
-                /**********************************************
-
-                 *      CONTRÔLE DE CONGESTION NORMAL
-
-                 **********************************************/
+                // Evolution de cwnd
 
                 else if (removed > 0) {
 
-                    if (cwnd < ssthresh)
-
-                        cwnd += removed;
-
-                    else
-
-                        cwnd += 1;
+                    if (cwnd < ssthresh) cwnd += removed; else cwnd += 1;
 
                 }
 
@@ -414,17 +394,9 @@ public class Sender {
 
             }
 
-
-
-            /************************************************************
-
-             *                     TIMEOUT
-
-             ************************************************************/
-
             catch (SocketTimeoutException e) {
 
-
+                // TIMEOUT → cwnd reset + rafale Go-Back-N
 
                 ssthresh = Math.max(2, cwnd / 2);
 
@@ -440,19 +412,19 @@ public class Sender {
 
                 if (!inFlight.isEmpty()) {
 
-
-
-                    int target = inFlight.containsKey(lastAck)
-
-                            ? lastAck
+                    int target = inFlight.containsKey(lastAck) ? lastAck
 
                             : findOldestRelativeToBase(inFlight.keySet(), lastAck);
 
+                    if (target != -1) {
 
-
-                    if (target != -1)
+                        // idem : renvoyer le "next expected" puis une petite rafale derrière
 
                         retransmitIfPresent(socket, addr, port, inFlight, target);
+
+                        retransmitBurstFrom(socket, addr, port, inFlight, lastAck, MAX_RETX_BURST - 1);
+
+                    }
 
                 }
 

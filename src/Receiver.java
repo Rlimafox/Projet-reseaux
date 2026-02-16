@@ -8,15 +8,39 @@ public class Receiver {
 
 
 
-    static int bufferMax = 32;               // fenêtre dynamique initiale
+    // --- Paramètres adaptatifs ---
+
+    static volatile int bufferMax = 32;      // fenêtre annoncée (dynamique, 16..255)
+
+    static volatile int bufferUsed = 0;      // occupation (en "segments")
 
     static final int SEQ_MOD = 65536;
 
 
 
-    // Nombre d'éléments réellement "occupés"
+    // Consommation "app" (~50 segments/s)
 
-    static volatile int bufferUsed = 0;
+    static final int CONSUME_INTERVAL_MS = 20;
+
+
+
+    // ACK périodiques pour éviter les blocages (dupACKs réguliers)
+
+    static final int ACK_PERIOD_MS = 100;
+
+
+
+    // Adresse/port du dernier expéditeur (pour ACK périodiques)
+
+    static volatile InetAddress lastAddr = null;
+
+    static volatile int lastPort = -1;
+
+
+
+    // Prochain numéro de séquence attendu
+
+    static volatile int expectedSeq;
 
 
 
@@ -29,8 +53,6 @@ public class Receiver {
 
 
     public static void main(String[] args) throws Exception {
-
-
 
         int port = Integer.parseInt(args[0]);
 
@@ -46,11 +68,51 @@ public class Receiver {
 
 
 
-        /************************************************************
+        /******************** HANDSHAKE ********************/
 
-         *          THREAD DE CONSOMMATION (COMME UNE APP)
+        DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
-         ************************************************************/
+        socket.receive(dp);
+
+
+
+        lastAddr = dp.getAddress();  // mémorise l'expéditeur
+
+        lastPort = dp.getPort();
+
+
+
+        Packet syn = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
+
+
+
+        Packet synAck = new Packet();
+
+        synAck.seq = 0;
+
+        synAck.ack = seqNext(syn.seq);
+
+        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
+
+        synAck.data = new byte[]{ (byte) bufferMax }; // annonce fenêtre initiale
+
+
+
+        byte[] synAckRaw = PacketEncoder.encode(synAck);
+
+        socket.send(new DatagramPacket(synAckRaw, synAckRaw.length, lastAddr, lastPort));
+
+
+
+        expectedSeq = seqNext(syn.seq);
+
+
+
+        System.out.println("Connexion établie");
+
+
+
+        /******************** Thread "application" : consommation + adaptation ********************/
 
         Thread consumer = new Thread(() -> {
 
@@ -58,27 +120,25 @@ public class Receiver {
 
                 try {
 
-                    Thread.sleep(20);   // Consomme ~50 éléments/s
+                    Thread.sleep(CONSUME_INTERVAL_MS);
 
-                } catch (Exception ignored) {}
-
-
-
-                if (bufferUsed > 0)
-
-                    bufferUsed--;
+                } catch (InterruptedException ignored) {}
 
 
 
-                // Ajustement dynamique de la taille du buffer
+                // Simule la consommation de l'app
+
+                if (bufferUsed > 0) bufferUsed--;
+
+
+
+                // Adaptation simple (bornes : 16..255 car rwnd tient sur 1 octet)
 
                 if (bufferUsed < bufferMax / 4 && bufferMax < 255) {
 
                     bufferMax++;
 
-                }
-
-                else if (bufferUsed > 3 * bufferMax / 4 && bufferMax > 16) {
+                } else if (bufferUsed > (3 * bufferMax) / 4 && bufferMax > 16) {
 
                     bufferMax--;
 
@@ -94,63 +154,59 @@ public class Receiver {
 
 
 
-        /************************************************************
+        /******************** Timer d'ACK périodiques ********************/
 
-         *                       HANDSHAKE
+        Timer ackTimer = new Timer(true);
 
-         ************************************************************/
+        ackTimer.scheduleAtFixedRate(new TimerTask() {
 
-        DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
+            @Override
 
-        socket.receive(dp);
+            public void run() {
 
+                // On ne peut rien envoyer tant qu'on n'a pas l'adresse/port de l'émetteur
 
-
-        Packet syn = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
-
-
-
-        Packet synAck = new Packet();
-
-        synAck.seq = 0;
-
-        synAck.ack = seqNext(syn.seq);
-
-        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
-
-        synAck.data = new byte[]{ (byte) bufferMax };  // fenêtre annoncée
+                if (lastAddr == null || lastPort == -1) return;
 
 
 
-        socket.send(new DatagramPacket(
-
-                PacketEncoder.encode(synAck),
-
-                PacketEncoder.encode(synAck).length,
-
-                dp.getAddress(),
-
-                dp.getPort()));
+                int rwnd = Math.max(0, bufferMax - bufferUsed);
 
 
 
-        int expectedSeq = seqNext(syn.seq);
+                try {
+
+                    Packet ack = new Packet();
+
+                    ack.flags = Packet.FLAG_ACK;
+
+                    ack.ack  = expectedSeq;                // prochain attendu (cum ACK)
+
+                    ack.data = new byte[]{ (byte) rwnd };  // fenêtre annoncée (0..255)
 
 
 
-        System.out.println("Connexion établie");
+                    byte[] raw = PacketEncoder.encode(ack);
+
+                    DatagramPacket dpAck = new DatagramPacket(raw, raw.length, lastAddr, lastPort);
+
+                    socket.send(dpAck);
 
 
 
-        /************************************************************
+                    // (Log optionnel) System.out.println("[ACK périodique] ack=" + ack.ack + " | rwnd=" + rwnd);
 
-         *                    BOUCLE PRINCIPALE
+                } catch (Exception ignored) {}
 
-         ************************************************************/
+            }
+
+        }, ACK_PERIOD_MS, ACK_PERIOD_MS);
+
+
+
+        /******************** BOUCLE PRINCIPALE ********************/
 
         while (true) {
-
-
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
 
@@ -158,15 +214,19 @@ public class Receiver {
 
 
 
+            // Mémorise à chaque paquet (utile si l'IP/port change, ou au démarrage)
+
+            lastAddr = dpData.getAddress();
+
+            lastPort = dpData.getPort();
+
+
+
             Packet p = PacketEncoder.decode(Arrays.copyOf(dpData.getData(), dpData.getLength()));
 
 
 
-            /************************************************************
-
-             *                     TRAITEMENT
-
-             ************************************************************/
+            // Go-Back-N strict : on n'accepte que le prochain attendu
 
             if (p.seq == expectedSeq) {
 
@@ -176,51 +236,41 @@ public class Receiver {
 
             }
 
+            // sinon : on jette, mais on renverra l'ACK "expectedSeq" (dupACK) juste après
 
 
-            // Toujours calculer la fenêtre restante
+
+            // Calcule la fenêtre restante et envoie l'ACK immédiatement
 
             int rwnd = Math.max(0, bufferMax - bufferUsed);
 
 
 
-            /************************************************************
-
-             *                       ENVOI DE L'ACK
-
-             ************************************************************/
-
             Packet ack = new Packet();
 
             ack.flags = Packet.FLAG_ACK;
 
-            ack.ack = expectedSeq;
+            ack.ack = expectedSeq;                 // ACK cumulatif = prochain attendu
 
-            ack.data = new byte[]{ (byte) rwnd };
-
-
-
-            socket.send(new DatagramPacket(
-
-                    PacketEncoder.encode(ack),
-
-                    PacketEncoder.encode(ack).length,
-
-                    dpData.getAddress(),
-
-                    dpData.getPort()));
+            ack.data = new byte[]{ (byte) rwnd };  // fenêtre annoncée
 
 
 
-            System.out.println(
+            byte[] ackRaw = PacketEncoder.encode(ack);
 
-                    "ACK envoyé | ack=" + ack.ack +
+            DatagramPacket dpAck = new DatagramPacket(ackRaw, ackRaw.length, lastAddr, lastPort);
 
-                            " | rwnd=" + rwnd +
+            socket.send(dpAck);
 
-                            " | bufUsed=" + bufferUsed +
 
-                            " | bufMax=" + bufferMax);
+
+            System.out.println("ACK envoyé | ack=" + ack.ack +
+
+                    " | rwnd=" + rwnd +
+
+                    " | bufUsed=" + bufferUsed +
+
+                    " | bufMax=" + bufferMax);
 
         }
 
