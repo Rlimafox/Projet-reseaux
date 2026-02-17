@@ -39,6 +39,8 @@ public class Receiver {
         int expectedSeq;
 
         int bufferUsed = 0;
+        int lastAckSent = -1;
+        int lastRwndSent = -1;
 
 
 
@@ -119,7 +121,10 @@ public class Receiver {
 
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
-            if (valid && p.seq == expectedSeq) {
+            if (!valid)
+                continue;
+
+            if (p.seq == expectedSeq) {
 
                 expectedSeq = seqNext(expectedSeq);
 
@@ -161,9 +166,11 @@ public class Receiver {
 
             ));
 
-
-
-            System.out.println("ACK envoyé | ack=" + ack.ack + " | rwnd=" + rwnd);
+            if (expectedSeq != lastAckSent || rwnd != lastRwndSent) {
+                System.out.println("ACK envoy?? | ack=" + ack.ack + " | rwnd=" + rwnd);
+                lastAckSent = expectedSeq;
+                lastRwndSent = rwnd;
+            }
 
         }
 
