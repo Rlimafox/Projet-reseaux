@@ -8,7 +8,7 @@ public class Receiver {
 
 
 
-    static final int BUFFER_MAX = 32;
+    static final int BUFFER_MAX = 200;
 
     static final int SEQ_MOD = 65536;
 
@@ -27,6 +27,8 @@ public class Receiver {
         int port = Integer.parseInt(args[0]);
 
         DatagramSocket socket = new DatagramSocket(port);
+        socket.setSendBufferSize(1 << 20);
+        socket.setReceiveBufferSize(1 << 20);
 
 
 
@@ -119,6 +121,24 @@ public class Receiver {
 
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
+            if (valid && (p.flags & Packet.FLAG_FIN) != 0) {
+                if (p.seq == expectedSeq)
+                    expectedSeq = seqNext(expectedSeq);
+                int finRwnd = BUFFER_MAX - bufferUsed;
+                Packet ack = new Packet();
+                ack.flags = Packet.FLAG_ACK;
+                ack.ack = expectedSeq;
+                ack.data = new byte[]{ (byte) finRwnd };
+                socket.send(new DatagramPacket(
+                        PacketEncoder.encode(ack),
+                        PacketEncoder.encode(ack).length,
+                        dpData.getAddress(),
+                        dpData.getPort()
+                ));
+                System.out.println("FIN recu, fermeture.");
+                break;
+            }
+
             if (valid && p.seq == expectedSeq) {
 
                 expectedSeq = seqNext(expectedSeq);
@@ -136,8 +156,6 @@ public class Receiver {
 
 
             int rwnd = BUFFER_MAX - bufferUsed;
-
-
 
             Packet ack = new Packet();
 
@@ -169,6 +187,7 @@ public class Receiver {
 
         }
 
+        socket.close();
     }
 
 }

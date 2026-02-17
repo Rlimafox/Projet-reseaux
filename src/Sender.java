@@ -10,7 +10,7 @@ public class Sender {
 
 
 
-    static final int MAX_DATA = 1024;
+    static final int MAX_DATA = 1400;
 
     static final int SEQ_MOD = 65536;
 
@@ -63,7 +63,8 @@ public class Sender {
         InetAddress addr = InetAddress.getByName(ip);
 
         DatagramSocket socket = new DatagramSocket();
-
+        socket.setSendBufferSize(1 << 20);
+        socket.setReceiveBufferSize(1 << 20);
         socket.setSoTimeout(500);
 
 
@@ -79,6 +80,7 @@ public class Sender {
         int lastAck = -1;
 
         int dupAckCount = 0;
+        int ackPrintCounter = 0;
 
 
 
@@ -292,7 +294,9 @@ public class Sender {
 
 
 
-                printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
+                ackPrintCounter++;
+                if (ackPrintCounter % 50 == 0)
+                    printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
 
 
 
@@ -326,6 +330,30 @@ public class Sender {
         }
 
 
+
+        // ===== FIN =====
+        Packet fin = new Packet();
+        fin.seq = nextSeq;
+        fin.flags = Packet.FLAG_FIN;
+        fin.data = new byte[0];
+        byte[] finRaw = PacketEncoder.encode(fin);
+
+        while (true) {
+            socket.send(new DatagramPacket(finRaw, finRaw.length, addr, port));
+            try {
+                DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
+                socket.receive(dpAck);
+                Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
+                if ((ack.flags & Packet.FLAG_ACK) == 0)
+                    continue;
+                if (PacketEncoder.computeChecksum(ack) != ack.checksum)
+                    continue;
+                if (ack.ack == fin.seq + 1)
+                    break;
+            } catch (SocketTimeoutException e) {
+                // retransmit FIN
+            }
+        }
 
         socket.close();
 
