@@ -118,7 +118,8 @@ public class Receiver {
 
 
 
-            if (p.seq == expectedSeq) {
+            boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
+            if (valid && p.seq == expectedSeq) {
 
                 expectedSeq = seqNext(expectedSeq);
 

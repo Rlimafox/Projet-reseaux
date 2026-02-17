@@ -219,7 +219,9 @@ public class Sender {
 
 
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
+                    continue;
 
+                if (PacketEncoder.computeChecksum(ack) != ack.checksum)
                     continue;
 
 
@@ -314,18 +316,11 @@ public class Sender {
 
 
 
-                if (!inFlight.isEmpty()) {
-
-                    int first = inFlight.firstKey();
-
+                for (byte[] raw : inFlight.values()) {
                     socket.send(new DatagramPacket(
-
-                            inFlight.get(first),
-
-                            inFlight.get(first).length,
-
+                            raw,
+                            raw.length,
                             addr, port));
-
                 }
 
             }

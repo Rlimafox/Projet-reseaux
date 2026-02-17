@@ -1,14 +1,18 @@
 import java.nio.*;
+import java.util.zip.CRC32;
 
 public class PacketEncoder {
 
     // Header :
-    // seq (4) | ack (4) | flags (1) | len (2) = 11 octets
-    private static final int HEADER_SIZE = 11;
+    // seq (4) | ack (4) | flags (1) | len (2) | checksum (4) = 15 octets
+    private static final int HEADER_SIZE = 15;
 
     public static byte[] encode(Packet p) {
         int dataLength = (p.data == null) ? 0 : p.data.length;
         int totalLength = HEADER_SIZE + dataLength;
+        short len = (short) dataLength;
+        int checksum = computeChecksum(p.seq, p.ack, p.flags, len, p.data);
+        p.checksum = checksum;
 
         ByteBuffer buffer = ByteBuffer.allocate(totalLength);
         buffer.order(ByteOrder.BIG_ENDIAN);
@@ -17,7 +21,8 @@ public class PacketEncoder {
         buffer.putInt(p.seq);          // 4 octets
         buffer.putInt(p.ack);          // 4 octets
         buffer.put(p.flags);           // 1 octet
-        buffer.putShort((short) dataLength); // 2 octets
+        buffer.putShort(len); // 2 octets
+        buffer.putInt(checksum);       // 4 octets
 
         // ----- DATA -----
         if (dataLength > 0) {
@@ -38,6 +43,7 @@ public class PacketEncoder {
         p.ack = buffer.getInt();
         p.flags = buffer.get();
         int dataLength = Short.toUnsignedInt(buffer.getShort());
+        p.checksum = buffer.getInt();
 
         // ----- DATA -----
         if (dataLength > 0) {
@@ -48,5 +54,25 @@ public class PacketEncoder {
         }
 
         return p;
+    }
+
+    public static int computeChecksum(Packet p) {
+        short len = (short) ((p.data == null) ? 0 : p.data.length);
+        return computeChecksum(p.seq, p.ack, p.flags, len, p.data);
+    }
+
+    private static int computeChecksum(int seq, int ack, byte flags, short len, byte[] data) {
+        CRC32 crc = new CRC32();
+        ByteBuffer header = ByteBuffer.allocate(11);
+        header.order(ByteOrder.BIG_ENDIAN);
+        header.putInt(seq);
+        header.putInt(ack);
+        header.put(flags);
+        header.putShort(len);
+        crc.update(header.array());
+        if (data != null && data.length > 0) {
+            crc.update(data);
+        }
+        return (int) crc.getValue();
     }
 }
