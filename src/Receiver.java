@@ -15,9 +15,7 @@ public class Receiver {
 
 
     static int seqNext(int x) {
-
-        return (x + 1) % SEQ_MOD;
-
+        return x + 1;
     }
 
 

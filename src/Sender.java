@@ -19,9 +19,7 @@ public class Sender {
     // --- comparaison modulo correcte ---
 
     static boolean seqLess(int a, int b) {
-
-        return ((b - a + SEQ_MOD) % SEQ_MOD) < (SEQ_MOD / 2);
-
+        return a < b;
     }
 
 
@@ -126,7 +124,7 @@ public class Sender {
 
 
 
-        int nextSeq = (baseSeq + 1) % SEQ_MOD;
+        int nextSeq = baseSeq + 1;
 
         int offset = 0;
 
@@ -198,7 +196,7 @@ public class Sender {
 
                 offset += size;
 
-                nextSeq = (nextSeq + 1) % SEQ_MOD;
+                nextSeq = nextSeq + 1;
 
             }
 
