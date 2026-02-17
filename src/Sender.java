@@ -10,7 +10,7 @@ public class Sender {
 
 
 
-    static final int MAX_DATA = 1400;
+    static final int MAX_DATA = 1024;
 
     static final int SEQ_MOD = 65536;
 
@@ -63,8 +63,6 @@ public class Sender {
         InetAddress addr = InetAddress.getByName(ip);
 
         DatagramSocket socket = new DatagramSocket();
-        socket.setSendBufferSize(1 << 20);
-        socket.setReceiveBufferSize(1 << 20);
         socket.setSoTimeout(500);
 
 
@@ -80,7 +78,6 @@ public class Sender {
         int lastAck = -1;
 
         int dupAckCount = 0;
-        int ackPrintCounter = 0;
 
 
 
@@ -294,9 +291,7 @@ public class Sender {
 
 
 
-                ackPrintCounter++;
-                if (ackPrintCounter % 50 == 0)
-                    printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
+                printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
 
 
 

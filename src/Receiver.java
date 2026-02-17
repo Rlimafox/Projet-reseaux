@@ -8,7 +8,7 @@ public class Receiver {
 
 
 
-    static final int BUFFER_MAX = 200;
+    static final int BUFFER_MAX = 32;
 
     static final int SEQ_MOD = 65536;
 
@@ -27,8 +27,6 @@ public class Receiver {
         int port = Integer.parseInt(args[0]);
 
         DatagramSocket socket = new DatagramSocket(port);
-        socket.setSendBufferSize(1 << 20);
-        socket.setReceiveBufferSize(1 << 20);
 
 
 
