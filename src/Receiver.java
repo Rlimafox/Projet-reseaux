@@ -1,27 +1,19 @@
-import java.net.*;
-
-import java.util.*;
-
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.util.Arrays;
 
 
 public class Receiver {
 
 
-
     static final int BUFFER_MAX = 32;
-
-    static final int SEQ_MOD = 65536;
-
-
 
     static int seqNext(int x) {
         return x + 1;
     }
 
 
-
     public static void main(String[] args) throws Exception {
-
 
 
         int port = Integer.parseInt(args[0]);
@@ -29,9 +21,7 @@ public class Receiver {
         DatagramSocket socket = new DatagramSocket(port);
 
 
-
         byte[] buffer = new byte[2048];
-
 
 
         int expectedSeq;
@@ -41,9 +31,7 @@ public class Receiver {
         int lastRwndSent = -1;
 
 
-
         System.out.println("Receiver en écoute...");
-
 
 
         // HANDSHAKE SYN
@@ -53,13 +41,11 @@ public class Receiver {
         socket.receive(dp);
 
 
-
         Packet syn = PacketEncoder.decode(
 
                 Arrays.copyOf(dp.getData(), dp.getLength())
 
         );
-
 
 
         // SYN-ACK
@@ -70,10 +56,9 @@ public class Receiver {
 
         synAck.ack = seqNext(syn.seq);
 
-        synAck.flags = (byte)(Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{ (byte) BUFFER_MAX };
-
+        synAck.data = new byte[]{(byte) BUFFER_MAX};
 
 
         socket.send(new DatagramPacket(
@@ -89,13 +74,10 @@ public class Receiver {
         ));
 
 
-
         expectedSeq = synAck.ack;
 
 
-
         System.out.println("Connexion établie");
-
 
 
         // LOOP
@@ -103,11 +85,9 @@ public class Receiver {
         while (true) {
 
 
-
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
 
             socket.receive(dpData);
-
 
 
             Packet p = PacketEncoder.decode(
@@ -115,7 +95,6 @@ public class Receiver {
                     Arrays.copyOf(dpData.getData(), dpData.getLength())
 
             );
-
 
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
@@ -126,7 +105,7 @@ public class Receiver {
                 Packet ack = new Packet();
                 ack.flags = Packet.FLAG_ACK;
                 ack.ack = expectedSeq;
-                ack.data = new byte[]{ (byte) finRwnd };
+                ack.data = new byte[]{(byte) finRwnd};
                 socket.send(new DatagramPacket(
                         PacketEncoder.encode(ack),
                         PacketEncoder.encode(ack).length,
@@ -146,11 +125,9 @@ public class Receiver {
             }
 
 
-
             if (bufferUsed > 0)
 
                 bufferUsed--;
-
 
 
             int rwnd = BUFFER_MAX - bufferUsed;
@@ -161,8 +138,7 @@ public class Receiver {
 
             ack.ack = expectedSeq;
 
-            ack.data = new byte[]{ (byte) rwnd };
-
+            ack.data = new byte[]{(byte) rwnd};
 
 
             socket.send(new DatagramPacket(

@@ -1,4 +1,5 @@
-import java.nio.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.zip.CRC32;
 
 public class PacketEncoder {

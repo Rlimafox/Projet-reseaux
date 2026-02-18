@@ -1,13 +1,16 @@
-import java.net.*;
-
-import java.nio.file.*;
-
-import java.util.*;
-
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.SocketTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.Random;
+import java.util.TreeMap;
 
 
 public class Sender {
-
 
 
     static final int MAX_DATA = 1024;
@@ -15,13 +18,11 @@ public class Sender {
     static final int SEQ_MOD = 65536;
 
 
-
     // --- comparaison modulo correcte ---
 
     static boolean seqLess(int a, int b) {
         return a < b;
     }
-
 
 
     static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
@@ -43,9 +44,7 @@ public class Sender {
     }
 
 
-
     public static void main(String[] args) throws Exception {
-
 
 
         String ip = args[0];
@@ -55,16 +54,13 @@ public class Sender {
         String filename = args[2];
 
 
-
         byte[] fileData = Files.readAllBytes(Path.of(filename));
-
 
 
         InetAddress addr = InetAddress.getByName(ip);
 
         DatagramSocket socket = new DatagramSocket();
         socket.setSoTimeout(500);
-
 
 
         int cwnd = 1;
@@ -74,11 +70,9 @@ public class Sender {
         int rwnd = 32;
 
 
-
         int lastAck = -1;
 
         int dupAckCount = 0;
-
 
 
         // packets en vol : seq -> raw
@@ -86,15 +80,12 @@ public class Sender {
         TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
 
 
-
         byte[] buffer = new byte[2048];
-
 
 
         // ===== HANDSHAKE =====
 
         int baseSeq = new Random().nextInt(SEQ_MOD);
-
 
 
         Packet syn = new Packet();
@@ -106,11 +97,9 @@ public class Sender {
         syn.data = new byte[0];
 
 
-
         byte[] synRaw = PacketEncoder.encode(syn);
 
         socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
-
 
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
@@ -118,19 +107,12 @@ public class Sender {
         socket.receive(dp);
 
 
-
-        Packet synAck = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
-
-
-
         int nextSeq = baseSeq + 1;
 
         int offset = 0;
 
 
-
         System.out.println("Connexion établie");
-
 
 
         // ===== BOUCLE PRINCIPALE =====
@@ -138,9 +120,7 @@ public class Sender {
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
 
-
             int window = Math.min(cwnd, rwnd);
-
 
 
             // zero-window probe
@@ -162,17 +142,14 @@ public class Sender {
             }
 
 
-
             // ENVOI des paquets dans la fenêtre
 
             while (offset < fileData.length && inFlight.size() < window) {
 
 
-
                 int size = Math.min(MAX_DATA, fileData.length - offset);
 
                 byte[] chunk = Arrays.copyOfRange(fileData, offset, offset + size);
-
 
 
                 Packet p = new Packet();
@@ -182,15 +159,12 @@ public class Sender {
                 p.data = chunk;
 
 
-
                 byte[] raw = PacketEncoder.encode(p);
 
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
 
-
                 inFlight.put(nextSeq, raw);
-
 
 
                 offset += size;
@@ -198,7 +172,6 @@ public class Sender {
                 nextSeq = nextSeq + 1;
 
             }
-
 
 
             // RÉCEPTION ACKS
@@ -210,9 +183,7 @@ public class Sender {
                 socket.receive(dpAck);
 
 
-
                 Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
-
 
 
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
@@ -222,11 +193,9 @@ public class Sender {
                     continue;
 
 
-
                 int ackSeq = ack.ack;
 
                 rwnd = ack.data[0] & 0xFF;
-
 
 
                 if (ackSeq == lastAck)
@@ -238,9 +207,7 @@ public class Sender {
                     dupAckCount = 0;
 
 
-
                 lastAck = ackSeq;
-
 
 
                 // --- suppression des paquets confirmés ---
@@ -264,7 +231,6 @@ public class Sender {
                 }
 
 
-
                 // --- contrôle de congestion ---
 
                 if (dupAckCount == 3) {
@@ -275,9 +241,7 @@ public class Sender {
 
                     cwnd = ssthresh;
 
-                }
-
-                else if (removed > 0) {
+                } else if (removed > 0) {
 
                     if (cwnd < ssthresh)
 
@@ -290,13 +254,10 @@ public class Sender {
                 }
 
 
-
                 printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
 
 
-
             } catch (SocketTimeoutException e) {
-
 
 
                 // --- TIMEOUT ---
@@ -308,9 +269,7 @@ public class Sender {
                 dupAckCount = 0;
 
 
-
                 printWindow("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());
-
 
 
                 for (byte[] raw : inFlight.values()) {
@@ -323,7 +282,6 @@ public class Sender {
             }
 
         }
-
 
 
         // ===== FIN =====
