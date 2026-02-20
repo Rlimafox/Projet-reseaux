@@ -9,7 +9,7 @@ public class Receiver {
     static final int BUFFER_MAX = 32;
 
     static int seqNext(int x) {
-        return x + 1;
+        return (x + 1) & 0xFFFF;
     }
 
     static byte[] ackPayload(int ackSeq, int rwnd) {
@@ -159,7 +159,8 @@ public class Receiver {
             ));
 
             if (expectedSeq != lastAckSent || rwnd != lastRwndSent) {
-                System.out.println("ACK envoye | ack=" + ack.ack + " | rwnd=" + rwnd);
+                int ackNum = ((ack.data[0] & 0xFF) << 8) | (ack.data[1] & 0xFF);
+                System.out.println("ACK envoye | ack=" + ackNum + " | rwnd=" + rwnd);
                 lastAckSent = expectedSeq;
                 lastRwndSent = rwnd;
             }

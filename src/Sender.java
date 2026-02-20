@@ -21,7 +21,8 @@ public class Sender {
     // --- comparaison modulo correcte ---
 
     static boolean seqLess(int a, int b) {
-        return a < b;
+        int diff = (a - b) & 0xFFFF;
+        return a != b && diff > 0x8000;
     }
 
     static int readU16(byte[] data, int offset) {
@@ -111,7 +112,7 @@ public class Sender {
         socket.receive(dp);
 
 
-        int nextSeq = baseSeq + 1;
+        int nextSeq = (baseSeq + 1) & 0xFFFF;
 
         int offset = 0;
 
@@ -173,7 +174,7 @@ public class Sender {
 
                 offset += size;
 
-                nextSeq = nextSeq + 1;
+                nextSeq = (nextSeq + 1) & 0xFFFF;
 
             }
 
