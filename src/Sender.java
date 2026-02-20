@@ -108,11 +108,20 @@ public class Sender {
 
 
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
-
         socket.receive(dp);
+        Packet synAck = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
+        if ((synAck.flags & Packet.FLAG_SYN) == 0 || (synAck.flags & Packet.FLAG_ACK) == 0) {
+            throw new IllegalStateException("Handshake invalide: SYN+ACK attendu");
+        }
 
+        Packet synFinal = new Packet();
+        synFinal.seq = (baseSeq + 1) & 0xFFFF;
+        synFinal.flags = Packet.FLAG_SYN;
+        synFinal.data = new byte[0];
+        byte[] synFinalRaw = PacketEncoder.encode(synFinal);
+        socket.send(new DatagramPacket(synFinalRaw, synFinalRaw.length, addr, port));
 
-        int nextSeq = (baseSeq + 1) & 0xFFFF;
+        int nextSeq = (baseSeq + 2) & 0xFFFF;
 
         int offset = 0;
 

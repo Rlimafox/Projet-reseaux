@@ -86,6 +86,17 @@ public class Receiver {
         expectedSeq = synAck.ack;
 
 
+        // 3e paquet du handshake : SYN final de l'emetteur
+        DatagramPacket dpFinalSyn = new DatagramPacket(buffer, buffer.length);
+        socket.receive(dpFinalSyn);
+        Packet synFinal = PacketEncoder.decode(
+                Arrays.copyOf(dpFinalSyn.getData(), dpFinalSyn.getLength())
+        );
+        if ((synFinal.flags & Packet.FLAG_SYN) == 0 || synFinal.seq != expectedSeq) {
+            throw new IllegalStateException("Handshake invalide: SYN final attendu");
+        }
+        expectedSeq = seqNext(expectedSeq);
+
         System.out.println("Connexion établie");
 
 
