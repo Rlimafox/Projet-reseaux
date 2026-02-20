@@ -12,12 +12,15 @@ public class Receiver {
         return (x + 1) & 0xFFFF;
     }
 
-    static byte[] ackPayload(int ackSeq, int rwnd) {
+    static int seqPrev(int x) {
+        return (x - 1) & 0xFFFF;
+    }
+
+    static byte[] ackPayload(int ackSeq) {
         int v = ackSeq & 0xFFFF;
         return new byte[]{
                 (byte) ((v >>> 8) & 0xFF),
-                (byte) (v & 0xFF),
-                (byte) (rwnd & 0xFF)
+                (byte) (v & 0xFF)
         };
     }
 
@@ -67,7 +70,7 @@ public class Receiver {
 
         synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = ackPayload(synAck.ack, BUFFER_MAX);
+        synAck.data = ackPayload(seqPrev(synAck.ack));
 
 
         socket.send(new DatagramPacket(
@@ -121,10 +124,9 @@ public class Receiver {
             if (valid && (p.flags & Packet.FLAG_FIN) != 0) {
                 if (p.seq == expectedSeq)
                     expectedSeq = seqNext(expectedSeq);
-                int finRwnd = BUFFER_MAX - bufferUsed;
                 Packet finAck = new Packet();
                 finAck.flags = (byte) (Packet.FLAG_FIN | Packet.FLAG_ACK);
-                finAck.data = ackPayload(expectedSeq, finRwnd);
+                finAck.data = ackPayload(seqPrev(expectedSeq));
                 byte[] finAckRaw = PacketEncoder.encode(finAck);
                 socket.send(new DatagramPacket(
                         finAckRaw,
@@ -163,11 +165,12 @@ public class Receiver {
 
 
             int rwnd = BUFFER_MAX - bufferUsed;
+            int lastContiguousSeq = seqPrev(expectedSeq);
 
             Packet ack = new Packet();
 
             ack.flags = Packet.FLAG_ACK;
-            ack.data = ackPayload(expectedSeq, rwnd);
+            ack.data = ackPayload(lastContiguousSeq);
 
 
             socket.send(new DatagramPacket(
@@ -185,7 +188,7 @@ public class Receiver {
             if (expectedSeq != lastAckSent || rwnd != lastRwndSent) {
                 int ackNum = ((ack.data[0] & 0xFF) << 8) | (ack.data[1] & 0xFF);
                 System.out.println("ACK envoye | ack=" + ackNum + " | rwnd=" + rwnd);
-                lastAckSent = expectedSeq;
+                lastAckSent = lastContiguousSeq;
                 lastRwndSent = rwnd;
             }
 

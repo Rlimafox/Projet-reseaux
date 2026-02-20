@@ -27,6 +27,10 @@ public class Sender {
         return a != b && diff > 0x8000;
     }
 
+    static boolean seqLessOrEqual(int a, int b) {
+        return a == b || seqLess(a, b);
+    }
+
     static int readU16(byte[] data, int offset) {
         return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
     }
@@ -224,10 +228,6 @@ public class Sender {
 
                 int ackSeq = readU16(ack.data, 0);
 
-                if (ack.data.length >= 3)
-                    rwnd = ack.data[2] & 0xFF;
-
-
                 if (ackSeq == lastAck)
 
                     dupAckCount++;
@@ -250,7 +250,7 @@ public class Sender {
 
                     int seq = it.next();
 
-                    if (seqLess(seq, ackSeq)) {
+                    if (seqLessOrEqual(seq, ackSeq)) {
 
                         it.remove();
 
@@ -321,7 +321,7 @@ public class Sender {
         fin.data = new byte[0];
         byte[] finRaw = PacketEncoder.encode(fin);
 
-        int finAckNumExpected = (fin.seq + 1) & 0xFFFF;
+        int finAckNumExpected = fin.seq & 0xFFFF;
         while (true) {
             socket.send(new DatagramPacket(finRaw, finRaw.length, addr, port));
             try {
