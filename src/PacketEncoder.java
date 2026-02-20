@@ -1,29 +1,26 @@
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.zip.CRC32;
 
 public class PacketEncoder {
 
-    // Header :
-    // seq (4) | ack (4) | flags (1) | len (2) | checksum (4) = 15 octets
-    private static final int HEADER_SIZE = 15;
+    // Header (format protocole):
+    // data_length (2) | seq (2) | flags (4 bits + 4 bits padding) = 5 octets
+    private static final int HEADER_SIZE = 5;
 
     public static byte[] encode(Packet p) {
         int dataLength = (p.data == null) ? 0 : p.data.length;
+        if (dataLength > 0xFFFF) {
+            throw new IllegalArgumentException("Payload too large for 16-bit length: " + dataLength);
+        }
         int totalLength = HEADER_SIZE + dataLength;
-        short len = (short) dataLength;
-        int checksum = computeChecksum(p.seq, p.ack, p.flags, len, p.data);
-        p.checksum = checksum;
 
         ByteBuffer buffer = ByteBuffer.allocate(totalLength);
         buffer.order(ByteOrder.BIG_ENDIAN);
 
         // ----- HEADER -----
-        buffer.putInt(p.seq);          // 4 octets
-        buffer.putInt(p.ack);          // 4 octets
-        buffer.put(p.flags);           // 1 octet
-        buffer.putShort(len); // 2 octets
-        buffer.putInt(checksum);       // 4 octets
+        buffer.putShort((short) dataLength);         // 2 octets
+        buffer.putShort((short) (p.seq & 0xFFFF));   // 2 octets
+        buffer.put((byte) (p.flags & 0x0F));         // 4 bits utiles + padding
 
         // ----- DATA -----
         if (dataLength > 0) {
@@ -34,17 +31,25 @@ public class PacketEncoder {
     }
 
     public static Packet decode(byte[] raw) {
+        if (raw.length < HEADER_SIZE) {
+            throw new IllegalArgumentException("Packet too short: " + raw.length);
+        }
+
         ByteBuffer buffer = ByteBuffer.wrap(raw);
         buffer.order(ByteOrder.BIG_ENDIAN);
 
         Packet p = new Packet();
 
         // ----- HEADER -----
-        p.seq = buffer.getInt();
-        p.ack = buffer.getInt();
-        p.flags = buffer.get();
         int dataLength = Short.toUnsignedInt(buffer.getShort());
-        p.checksum = buffer.getInt();
+        p.seq = Short.toUnsignedInt(buffer.getShort());
+        p.flags = (byte) (buffer.get() & 0x0F);
+
+        if (raw.length != HEADER_SIZE + dataLength) {
+            throw new IllegalArgumentException(
+                    "Packet length mismatch. expected=" + (HEADER_SIZE + dataLength) + ", actual=" + raw.length
+            );
+        }
 
         // ----- DATA -----
         if (dataLength > 0) {
@@ -58,22 +63,12 @@ public class PacketEncoder {
     }
 
     public static int computeChecksum(Packet p) {
-        short len = (short) ((p.data == null) ? 0 : p.data.length);
-        return computeChecksum(p.seq, p.ack, p.flags, len, p.data);
+        // Le sujet précise que la corruption est couverte par le checksum UDP.
+        return 0;
     }
 
-    private static int computeChecksum(int seq, int ack, byte flags, short len, byte[] data) {
-        CRC32 crc = new CRC32();
-        ByteBuffer header = ByteBuffer.allocate(11);
-        header.order(ByteOrder.BIG_ENDIAN);
-        header.putInt(seq);
-        header.putInt(ack);
-        header.put(flags);
-        header.putShort(len);
-        crc.update(header.array());
-        if (data != null && data.length > 0) {
-            crc.update(data);
-        }
-        return (int) crc.getValue();
+    public static int computeChecksum(int seq, int ack, byte flags, short len, byte[] data) {
+        // Signature conservée pour compatibilité avec le code existant.
+        return 0;
     }
 }
