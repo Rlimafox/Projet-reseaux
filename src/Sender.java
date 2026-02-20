@@ -16,6 +16,8 @@ public class Sender {
     static final int MAX_DATA = 1024;
 
     static final int SEQ_MOD = 65536;
+    static final int HANDSHAKE_TIMEOUT_MS = 500;
+    static final int SYN_MAX_ATTEMPTS = 3;
 
 
     // --- comparaison modulo correcte ---
@@ -65,7 +67,7 @@ public class Sender {
         InetAddress addr = InetAddress.getByName(ip);
 
         DatagramSocket socket = new DatagramSocket();
-        socket.setSoTimeout(500);
+        socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
 
 
         int cwnd = 1;
@@ -104,14 +106,25 @@ public class Sender {
 
         byte[] synRaw = PacketEncoder.encode(syn);
 
-        socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
-
-
-        DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
-        socket.receive(dp);
-        Packet synAck = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
-        if ((synAck.flags & Packet.FLAG_SYN) == 0 || (synAck.flags & Packet.FLAG_ACK) == 0) {
-            throw new IllegalStateException("Handshake invalide: SYN+ACK attendu");
+        Packet synAck = null;
+        for (int attempt = 1; attempt <= SYN_MAX_ATTEMPTS; attempt++) {
+            socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
+            try {
+                DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
+                socket.receive(dp);
+                Packet candidate = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
+                if ((candidate.flags & Packet.FLAG_SYN) != 0 && (candidate.flags & Packet.FLAG_ACK) != 0) {
+                    synAck = candidate;
+                    break;
+                }
+            } catch (SocketTimeoutException ignored) {
+                // tentative suivante
+            }
+        }
+        if (synAck == null) {
+            System.err.println("Erreur: echec d'ouverture de connexion apres 3 tentatives SYN.");
+            socket.close();
+            return;
         }
 
         Packet synFinal = new Packet();
@@ -308,19 +321,27 @@ public class Sender {
         fin.data = new byte[0];
         byte[] finRaw = PacketEncoder.encode(fin);
 
+        int finAckNumExpected = (fin.seq + 1) & 0xFFFF;
         while (true) {
             socket.send(new DatagramPacket(finRaw, finRaw.length, addr, port));
             try {
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
-                Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
-                if ((ack.flags & Packet.FLAG_ACK) == 0)
+                Packet finAck = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
+                if ((finAck.flags & Packet.FLAG_FIN) == 0 || (finAck.flags & Packet.FLAG_ACK) == 0)
                     continue;
-                if (PacketEncoder.computeChecksum(ack) != ack.checksum)
+                if (PacketEncoder.computeChecksum(finAck) != finAck.checksum)
                     continue;
-                if (ack.data != null && ack.data.length >= 2 &&
-                        readU16(ack.data, 0) == ((fin.seq + 1) & 0xFFFF))
+                if (finAck.data != null && finAck.data.length >= 2 &&
+                        readU16(finAck.data, 0) == finAckNumExpected) {
+                    Packet finalAck = new Packet();
+                    finalAck.seq = (fin.seq + 1) & 0xFFFF;
+                    finalAck.flags = Packet.FLAG_ACK;
+                    finalAck.data = new byte[0];
+                    byte[] finalAckRaw = PacketEncoder.encode(finalAck);
+                    socket.send(new DatagramPacket(finalAckRaw, finalAckRaw.length, addr, port));
                     break;
+                }
             } catch (SocketTimeoutException e) {
                 // retransmit FIN
             }

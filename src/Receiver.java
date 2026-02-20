@@ -122,15 +122,28 @@ public class Receiver {
                 if (p.seq == expectedSeq)
                     expectedSeq = seqNext(expectedSeq);
                 int finRwnd = BUFFER_MAX - bufferUsed;
-                Packet ack = new Packet();
-                ack.flags = Packet.FLAG_ACK;
-                ack.data = ackPayload(expectedSeq, finRwnd);
+                Packet finAck = new Packet();
+                finAck.flags = (byte) (Packet.FLAG_FIN | Packet.FLAG_ACK);
+                finAck.data = ackPayload(expectedSeq, finRwnd);
+                byte[] finAckRaw = PacketEncoder.encode(finAck);
                 socket.send(new DatagramPacket(
-                        PacketEncoder.encode(ack),
-                        PacketEncoder.encode(ack).length,
+                        finAckRaw,
+                        finAckRaw.length,
                         dpData.getAddress(),
                         dpData.getPort()
                 ));
+                // Attend l'ACK final de fermeture de l'emetteur.
+                socket.setSoTimeout(500);
+                try {
+                    DatagramPacket dpLast = new DatagramPacket(buffer, buffer.length);
+                    socket.receive(dpLast);
+                    Packet last = PacketEncoder.decode(Arrays.copyOf(dpLast.getData(), dpLast.getLength()));
+                    if ((last.flags & Packet.FLAG_ACK) == 0) {
+                        System.err.println("Fermeture: ACK final manquant/invalide.");
+                    }
+                } catch (Exception e) {
+                    System.err.println("Fermeture: timeout en attente de l'ACK final.");
+                }
                 System.out.println("FIN recu, fermeture.");
                 break;
             }
