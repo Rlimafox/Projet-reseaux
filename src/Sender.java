@@ -5,8 +5,10 @@ import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Random;
+import java.util.Set;
 import java.util.TreeMap;
 
 
@@ -82,8 +84,8 @@ public class Sender {
 
 
         int lastAck = -1;
-
-        int dupAckCount = 0;
+        Set<Integer> dupAckSeqSet = new HashSet<>();
+        boolean dupAckRetransmitted = false;
 
 
         // packets en vol : seq -> raw
@@ -227,17 +229,20 @@ public class Sender {
                     continue;
 
                 int ackSeq = readU16(ack.data, 0);
+                int ackPacketSeq = ack.seq & 0xFFFF;
 
-                if (ackSeq == lastAck)
-
-                    dupAckCount++;
-
-                else
-
-                    dupAckCount = 0;
-
-
-                lastAck = ackSeq;
+                boolean triggerFastRetransmit = false;
+                if (ackSeq == lastAck) {
+                    if (!dupAckRetransmitted && dupAckSeqSet.add(ackPacketSeq) && dupAckSeqSet.size() >= 3) {
+                        triggerFastRetransmit = true;
+                        dupAckRetransmitted = true;
+                    }
+                } else {
+                    lastAck = ackSeq;
+                    dupAckSeqSet.clear();
+                    dupAckSeqSet.add(ackPacketSeq);
+                    dupAckRetransmitted = false;
+                }
 
 
                 // --- suppression des paquets confirmés ---
@@ -263,13 +268,19 @@ public class Sender {
 
                 // --- contrôle de congestion ---
 
-                if (dupAckCount == 3) {
+                if (triggerFastRetransmit) {
 
                     // simple fast recovery
 
                     ssthresh = Math.max(2, cwnd / 2);
 
                     cwnd = ssthresh;
+                    for (byte[] raw : inFlight.values()) {
+                        socket.send(new DatagramPacket(
+                                raw,
+                                raw.length,
+                                addr, port));
+                    }
 
                 } else if (removed > 0) {
 
@@ -295,8 +306,8 @@ public class Sender {
                 ssthresh = Math.max(2, cwnd / 2);
 
                 cwnd = 1;
-
-                dupAckCount = 0;
+                dupAckSeqSet.clear();
+                dupAckRetransmitted = false;
 
 
                 printWindow("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());

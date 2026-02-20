@@ -1,6 +1,7 @@
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.util.Arrays;
+import java.util.Random;
 
 
 public class Receiver {
@@ -37,6 +38,7 @@ public class Receiver {
 
 
         int expectedSeq;
+        int localSeq = new Random().nextInt(65536);
 
         int bufferUsed = 0;
         int lastAckSent = -1;
@@ -64,7 +66,7 @@ public class Receiver {
 
         Packet synAck = new Packet();
 
-        synAck.seq = 0;
+        synAck.seq = localSeq;
 
         synAck.ack = seqNext(syn.seq);
 
@@ -84,6 +86,7 @@ public class Receiver {
                 dp.getPort()
 
         ));
+        localSeq = seqNext(localSeq);
 
 
         expectedSeq = synAck.ack;
@@ -125,6 +128,7 @@ public class Receiver {
                 if (p.seq == expectedSeq)
                     expectedSeq = seqNext(expectedSeq);
                 Packet finAck = new Packet();
+                finAck.seq = localSeq;
                 finAck.flags = (byte) (Packet.FLAG_FIN | Packet.FLAG_ACK);
                 finAck.data = ackPayload(seqPrev(expectedSeq));
                 byte[] finAckRaw = PacketEncoder.encode(finAck);
@@ -134,6 +138,7 @@ public class Receiver {
                         dpData.getAddress(),
                         dpData.getPort()
                 ));
+                localSeq = seqNext(localSeq);
                 // Attend l'ACK final de fermeture de l'emetteur.
                 socket.setSoTimeout(500);
                 try {
@@ -169,6 +174,7 @@ public class Receiver {
 
             Packet ack = new Packet();
 
+            ack.seq = localSeq;
             ack.flags = Packet.FLAG_ACK;
             ack.data = ackPayload(lastContiguousSeq);
 
@@ -184,6 +190,7 @@ public class Receiver {
                     dpData.getPort()
 
             ));
+            localSeq = seqNext(localSeq);
 
             if (expectedSeq != lastAckSent || rwnd != lastRwndSent) {
                 int ackNum = ((ack.data[0] & 0xFF) << 8) | (ack.data[1] & 0xFF);
