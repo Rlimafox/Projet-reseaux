@@ -24,6 +24,10 @@ public class Sender {
         return a < b;
     }
 
+    static int readU16(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
+    }
+
 
     static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
 
@@ -192,10 +196,13 @@ public class Sender {
                 if (PacketEncoder.computeChecksum(ack) != ack.checksum)
                     continue;
 
+                if (ack.data == null || ack.data.length < 2)
+                    continue;
 
-                int ackSeq = ack.ack;
+                int ackSeq = readU16(ack.data, 0);
 
-                rwnd = ack.data[0] & 0xFF;
+                if (ack.data.length >= 3)
+                    rwnd = ack.data[2] & 0xFF;
 
 
                 if (ackSeq == lastAck)
@@ -301,7 +308,8 @@ public class Sender {
                     continue;
                 if (PacketEncoder.computeChecksum(ack) != ack.checksum)
                     continue;
-                if (ack.ack == fin.seq + 1)
+                if (ack.data != null && ack.data.length >= 2 &&
+                        readU16(ack.data, 0) == ((fin.seq + 1) & 0xFFFF))
                     break;
             } catch (SocketTimeoutException e) {
                 // retransmit FIN

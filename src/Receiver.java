@@ -12,6 +12,15 @@ public class Receiver {
         return x + 1;
     }
 
+    static byte[] ackPayload(int ackSeq, int rwnd) {
+        int v = ackSeq & 0xFFFF;
+        return new byte[]{
+                (byte) ((v >>> 8) & 0xFF),
+                (byte) (v & 0xFF),
+                (byte) (rwnd & 0xFF)
+        };
+    }
+
 
     public static void main(String[] args) throws Exception {
 
@@ -58,7 +67,7 @@ public class Receiver {
 
         synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
 
-        synAck.data = new byte[]{(byte) BUFFER_MAX};
+        synAck.data = ackPayload(synAck.ack, BUFFER_MAX);
 
 
         socket.send(new DatagramPacket(
@@ -104,8 +113,7 @@ public class Receiver {
                 int finRwnd = BUFFER_MAX - bufferUsed;
                 Packet ack = new Packet();
                 ack.flags = Packet.FLAG_ACK;
-                ack.ack = expectedSeq;
-                ack.data = new byte[]{(byte) finRwnd};
+                ack.data = ackPayload(expectedSeq, finRwnd);
                 socket.send(new DatagramPacket(
                         PacketEncoder.encode(ack),
                         PacketEncoder.encode(ack).length,
@@ -135,10 +143,7 @@ public class Receiver {
             Packet ack = new Packet();
 
             ack.flags = Packet.FLAG_ACK;
-
-            ack.ack = expectedSeq;
-
-            ack.data = new byte[]{(byte) rwnd};
+            ack.data = ackPayload(expectedSeq, rwnd);
 
 
             socket.send(new DatagramPacket(
