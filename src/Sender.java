@@ -16,6 +16,7 @@ public class Sender {
 
 
     static final int MAX_DATA = 1024;
+    static final int DEFAULT_WINDOW = 256;
 
     static final int SEQ_MOD = 65536;
     static final int HANDSHAKE_TIMEOUT_MS = 500;
@@ -76,11 +77,9 @@ public class Sender {
         socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
 
 
-        int cwnd = 1;
-
-        int ssthresh = 32;
-
-        int rwnd = 32;
+        int cwnd = DEFAULT_WINDOW;
+        int ssthresh = DEFAULT_WINDOW;
+        int rwnd = DEFAULT_WINDOW;
 
 
         int lastAck = -1;
@@ -272,25 +271,12 @@ public class Sender {
 
                     // simple fast recovery
 
-                    ssthresh = Math.max(2, cwnd / 2);
-
-                    cwnd = ssthresh;
                     for (byte[] raw : inFlight.values()) {
                         socket.send(new DatagramPacket(
                                 raw,
                                 raw.length,
                                 addr, port));
                     }
-
-                } else if (removed > 0) {
-
-                    if (cwnd < ssthresh)
-
-                        cwnd += removed; // slow start
-
-                    else
-
-                        cwnd += 1;       // congestion avoidance
 
                 }
 
@@ -303,9 +289,8 @@ public class Sender {
 
                 // --- TIMEOUT ---
 
-                ssthresh = Math.max(2, cwnd / 2);
-
-                cwnd = 1;
+                cwnd = DEFAULT_WINDOW;
+                ssthresh = DEFAULT_WINDOW;
                 dupAckSeqSet.clear();
                 dupAckRetransmitted = false;
 
