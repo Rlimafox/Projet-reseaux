@@ -6,7 +6,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
@@ -34,14 +33,12 @@ public class Sender {
         return a == b || seqLess(a, b);
     }
 
-    static int readU16(byte[] data, int offset) {
-        return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
+    static int readU16(byte[] data) {
+        return ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
     }
 
 
-    static void printWindow(String event, int cwnd, int ssthresh, int rwnd, int inFlight) {
-
-        int effective = Math.min(cwnd, rwnd);
+    static void printWindow(String event, int cwnd, int ssthresh, int inFlight) {
 
         System.out.println("[WINDOW] " + event +
 
@@ -49,9 +46,9 @@ public class Sender {
 
                 " | ssthresh=" + ssthresh +
 
-                " | rwnd=" + rwnd +
+                " | rwnd=" + DEFAULT_WINDOW +
 
-                " | effective=" + effective +
+                " | effective=" + cwnd +
 
                 " | inFlight=" + inFlight);
 
@@ -79,7 +76,6 @@ public class Sender {
 
         int cwnd = DEFAULT_WINDOW;
         int ssthresh = DEFAULT_WINDOW;
-        int rwnd = DEFAULT_WINDOW;
 
 
         int lastAck = -1;
@@ -157,31 +153,9 @@ public class Sender {
         while (offset < fileData.length || !inFlight.isEmpty()) {
 
 
-            int window = Math.min(cwnd, rwnd);
-
-
-            // zero-window probe
-
-            if (rwnd == 0 && !inFlight.isEmpty()) {
-
-                int first = inFlight.firstKey();
-
-                socket.send(new DatagramPacket(
-
-                        inFlight.get(first),
-
-                        inFlight.get(first).length,
-
-                        addr, port));
-
-                System.out.println("[PROBE] seq=" + first);
-
-            }
-
-
             // ENVOI des paquets dans la fenêtre
 
-            while (offset < fileData.length && inFlight.size() < window) {
+            while (offset < fileData.length && inFlight.size() < cwnd) {
 
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
@@ -237,7 +211,7 @@ public class Sender {
                 if (ack.data == null || ack.data.length < 2)
                     continue;
 
-                int ackSeq = readU16(ack.data, 0);
+                int ackSeq = readU16(ack.data);
                 int ackPacketSeq = ack.seq & 0xFFFF;
 
                 boolean triggerFastRetransmit = false;
@@ -255,24 +229,7 @@ public class Sender {
 
 
                 // --- suppression des paquets confirmés ---
-
-                int removed = 0;
-
-                Iterator<Integer> it = inFlight.keySet().iterator();
-
-                while (it.hasNext()) {
-
-                    int seq = it.next();
-
-                    if (seqLessOrEqual(seq, ackSeq)) {
-
-                        it.remove();
-
-                        removed++;    // <<< FIX CRITIQUE
-
-                    }
-
-                }
+                inFlight.keySet().removeIf(seq -> seqLessOrEqual(seq, ackSeq));
 
 
                 // --- contrôle de congestion ---
@@ -291,7 +248,7 @@ public class Sender {
                 }
 
 
-                printWindow("ACK", cwnd, ssthresh, rwnd, inFlight.size());
+                printWindow("ACK", cwnd, ssthresh, inFlight.size());
 
 
             } catch (SocketTimeoutException e) {
@@ -299,13 +256,11 @@ public class Sender {
 
                 // --- TIMEOUT ---
 
-                cwnd = DEFAULT_WINDOW;
-                ssthresh = DEFAULT_WINDOW;
                 dupAckSeqSet.clear();
                 dupAckRetransmitted = false;
 
 
-                printWindow("TIMEOUT", cwnd, ssthresh, rwnd, inFlight.size());
+                printWindow("TIMEOUT", cwnd, ssthresh, inFlight.size());
 
 
                 for (byte[] raw : inFlight.values()) {
@@ -344,7 +299,7 @@ public class Sender {
                 if (PacketEncoder.computeChecksum(finAck) != finAck.checksum)
                     continue;
                 if (finAck.data != null && finAck.data.length >= 2 &&
-                        readU16(finAck.data, 0) == finAckNumExpected) {
+                        readU16(finAck.data) == finAckNumExpected) {
                     Packet finalAck = new Packet();
                     finalAck.seq = (fin.seq + 1) & 0xFFFF;
                     finalAck.flags = Packet.FLAG_ACK;
@@ -365,3 +320,8 @@ public class Sender {
     }
 
 }
+
+
+
+
+

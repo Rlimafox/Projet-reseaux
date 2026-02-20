@@ -152,7 +152,6 @@ public class Receiver {
                         dpData.getAddress(),
                         dpData.getPort()
                 ));
-                localSeq = seqNext(localSeq);
                 // Attend l'ACK final de fermeture de l'emetteur.
                 socket.setSoTimeout(500);
                 try {
