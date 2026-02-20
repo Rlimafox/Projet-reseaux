@@ -60,6 +60,11 @@ public class Receiver {
                 Arrays.copyOf(dp.getData(), dp.getLength())
 
         );
+        if ((syn.flags & Packet.FLAG_RST) != 0) {
+            System.err.println("Erreur: connexion interrompue par RST pendant l'ouverture.");
+            socket.close();
+            return;
+        }
 
 
         // SYN-ACK
@@ -98,6 +103,11 @@ public class Receiver {
         Packet synFinal = PacketEncoder.decode(
                 Arrays.copyOf(dpFinalSyn.getData(), dpFinalSyn.getLength())
         );
+        if ((synFinal.flags & Packet.FLAG_RST) != 0) {
+            System.err.println("Erreur: connexion interrompue par RST pendant l'ouverture.");
+            socket.close();
+            return;
+        }
         if ((synFinal.flags & Packet.FLAG_SYN) == 0 || synFinal.seq != expectedSeq) {
             throw new IllegalStateException("Handshake invalide: SYN final attendu");
         }
@@ -121,6 +131,10 @@ public class Receiver {
                     Arrays.copyOf(dpData.getData(), dpData.getLength())
 
             );
+            if ((p.flags & Packet.FLAG_RST) != 0) {
+                System.err.println("Erreur: connexion interrompue par RST pendant le transfert.");
+                break;
+            }
 
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
@@ -145,6 +159,10 @@ public class Receiver {
                     DatagramPacket dpLast = new DatagramPacket(buffer, buffer.length);
                     socket.receive(dpLast);
                     Packet last = PacketEncoder.decode(Arrays.copyOf(dpLast.getData(), dpLast.getLength()));
+                    if ((last.flags & Packet.FLAG_RST) != 0) {
+                        System.err.println("Erreur: connexion interrompue par RST pendant la fermeture.");
+                        break;
+                    }
                     if ((last.flags & Packet.FLAG_ACK) == 0) {
                         System.err.println("Fermeture: ACK final manquant/invalide.");
                     }

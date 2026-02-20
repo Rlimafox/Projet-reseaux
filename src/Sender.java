@@ -118,6 +118,11 @@ public class Sender {
                 DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dp);
                 Packet candidate = PacketEncoder.decode(Arrays.copyOf(dp.getData(), dp.getLength()));
+                if ((candidate.flags & Packet.FLAG_RST) != 0) {
+                    System.err.println("Erreur: connexion interrompue par RST pendant l'ouverture.");
+                    socket.close();
+                    return;
+                }
                 if ((candidate.flags & Packet.FLAG_SYN) != 0 && (candidate.flags & Packet.FLAG_ACK) != 0) {
                     synAck = candidate;
                     break;
@@ -218,6 +223,11 @@ public class Sender {
                 Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
 
 
+                if ((ack.flags & Packet.FLAG_RST) != 0) {
+                    System.err.println("Erreur: connexion interrompue par RST pendant le transfert.");
+                    socket.close();
+                    return;
+                }
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
 
@@ -324,6 +334,11 @@ public class Sender {
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
                 socket.receive(dpAck);
                 Packet finAck = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
+                if ((finAck.flags & Packet.FLAG_RST) != 0) {
+                    System.err.println("Erreur: connexion interrompue par RST pendant la fermeture.");
+                    socket.close();
+                    return;
+                }
                 if ((finAck.flags & Packet.FLAG_FIN) == 0 || (finAck.flags & Packet.FLAG_ACK) == 0)
                     continue;
                 if (PacketEncoder.computeChecksum(finAck) != finAck.checksum)
