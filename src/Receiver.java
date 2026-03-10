@@ -28,14 +28,11 @@ public class Receiver {
 
     public static void main(String[] args) throws Exception {
 
-
         int port = Integer.parseInt(args[0]);
 
         DatagramSocket socket = new DatagramSocket(port);
 
-
         byte[] buffer = new byte[2048];
-
 
         int expectedSeq;
         int localSeq = new Random().nextInt(65536);
@@ -56,10 +53,9 @@ public class Receiver {
 
 
         Packet syn = PacketEncoder.decode(
-
                 Arrays.copyOf(dp.getData(), dp.getLength())
-
         );
+
         if ((syn.flags & Packet.FLAG_RST) != 0) {
             System.err.println("Erreur: connexion interrompue par RST pendant l'ouverture.");
             socket.close();
@@ -75,7 +71,7 @@ public class Receiver {
 
         synAck.ack = seqNext(syn.seq);
 
-        synAck.flags = (byte) (Packet.FLAG_SYN | Packet.FLAG_ACK);
+        synAck.flags = (Packet.FLAG_SYN | Packet.FLAG_ACK);
 
         synAck.data = ackPayload(seqPrev(synAck.ack));
 
@@ -120,16 +116,12 @@ public class Receiver {
 
         while (true) {
 
-
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
 
             socket.receive(dpData);
 
-
             Packet p = PacketEncoder.decode(
-
                     Arrays.copyOf(dpData.getData(), dpData.getLength())
-
             );
             if ((p.flags & Packet.FLAG_RST) != 0) {
                 System.err.println("Erreur: connexion interrompue par RST pendant le transfert.");
@@ -173,17 +165,14 @@ public class Receiver {
             }
 
             if (valid && p.seq == expectedSeq) {
-
                 expectedSeq = seqNext(expectedSeq);
 
                 bufferUsed++;
-
             }
 
-
-            if (bufferUsed > 0)
-
+            if (bufferUsed > 0){
                 bufferUsed--;
+            }
 
 
             int rwnd = BUFFER_MAX - bufferUsed;
@@ -215,10 +204,7 @@ public class Receiver {
                 lastAckSent = lastContiguousSeq;
                 lastRwndSent = rwnd;
             }
-
         }
-
         socket.close();
     }
-
 }
