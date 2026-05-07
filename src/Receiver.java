@@ -98,18 +98,18 @@ public class Receiver {
 
 
         // 3e paquet du handshake : SYN final de l'emetteur
-        DatagramPacket dpFinalSyn = new DatagramPacket(buffer, buffer.length);
-        socket.receive(dpFinalSyn);
-        Packet synFinal = PacketEncoder.decode(
-                Arrays.copyOf(dpFinalSyn.getData(), dpFinalSyn.getLength())
+        DatagramPacket dpFinalack = new DatagramPacket(buffer, buffer.length);
+        socket.receive(dpFinalack);
+        Packet ackFinal = PacketEncoder.decode(
+                Arrays.copyOf(dpFinalack.getData(), dpFinalack.getLength())
         );
-        if ((synFinal.flags & Packet.FLAG_RST) != 0) {
+        if ((ackFinal.flags & Packet.FLAG_RST) != 0) {
             System.err.println("Erreur: connexion interrompue par RST pendant l'ouverture.");
             socket.close();
             return;
         }
-        if ((synFinal.flags & Packet.FLAG_SYN) == 0 || synFinal.seq != expectedSeq) {
-            throw new IllegalStateException("Handshake invalide: SYN final attendu");
+        if ((ackFinal.flags & Packet.FLAG_ACK) == 0 || ackFinal.seq != expectedSeq) {
+            throw new IllegalStateException("Handshake invalide: ACK final attendu");
         }
         expectedSeq = seqNext(expectedSeq);
 
