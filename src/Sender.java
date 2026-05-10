@@ -133,11 +133,11 @@ public class Sender {
             return;
         }
 
-        Packet synFinal = new Packet();
-        synFinal.seq = (baseSeq + 1) & 0xFFFF;
-        synFinal.flags = Packet.FLAG_SYN;
-        synFinal.data = new byte[0];
-        byte[] synFinalRaw = PacketEncoder.encode(synFinal);
+        Packet ackFinal = new Packet();
+        ackFinal.seq = (baseSeq + 1) & 0xFFFF;
+        ackFinal.flags = Packet.FLAG_ACK;
+        ackFinal.data = new byte[0];
+        byte[] synFinalRaw = PacketEncoder.encode(ackFinal);
         socket.send(new DatagramPacket(synFinalRaw, synFinalRaw.length, addr, port));
 
         int nextSeq = (baseSeq + 2) & 0xFFFF;
