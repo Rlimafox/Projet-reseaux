@@ -1,3 +1,4 @@
+import java.io.FileOutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.util.Arrays;
@@ -50,7 +51,6 @@ public class Receiver {
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
 
         socket.receive(dp);
-
 
         Packet syn = PacketEncoder.decode(
                 Arrays.copyOf(dp.getData(), dp.getLength())
@@ -111,6 +111,8 @@ public class Receiver {
 
         System.out.println("Connexion établie");
 
+        FileOutputStream fos = new FileOutputStream("src/test.txt");
+
 
         // LOOP
 
@@ -127,6 +129,13 @@ public class Receiver {
                 System.err.println("Erreur: connexion interrompue par RST pendant le transfert.");
                 break;
             }
+
+            System.out.println(new String(p.data));
+
+            fos.write(p.data, 0, p.data.length);
+            System.out.println(fos.toString());
+            //fos.close();
+
 
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
@@ -161,6 +170,7 @@ public class Receiver {
                     System.err.println("Fermeture: timeout en attente de l'ACK final.");
                 }
                 System.out.println("FIN recu, fermeture.");
+                fos.close();
                 break;
             }
 
