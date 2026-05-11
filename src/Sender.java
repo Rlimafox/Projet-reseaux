@@ -37,7 +37,6 @@ public class Sender {
         return ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
     }
 
-
     static void printWindow(String event, int cwnd, int ssthresh, int inFlight) {
 
         System.out.println("[WINDOW] " + event +
@@ -57,57 +56,31 @@ public class Sender {
 
     public static void main(String[] args) throws Exception {
 
-
         String ip = args[0];
-
         int port = Integer.parseInt(args[1]);
-
         String filename = args[2];
-
-
         byte[] fileData = Files.readAllBytes(Path.of(filename));
-
-
         InetAddress addr = InetAddress.getByName(ip);
-
         DatagramSocket socket = new DatagramSocket();
-        socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
-
-
         int cwnd = DEFAULT_WINDOW;
         int ssthresh = DEFAULT_WINDOW;
-
-
         int lastAck = -1;
-        Set<Integer> dupAckSeqSet = new HashSet<>();
         boolean dupAckRetransmitted = false;
-
-
-        // packets en vol : seq -> raw
-
+        Set<Integer> dupAckSeqSet = new HashSet<>();
+        socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
         TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
-
-
         byte[] buffer = new byte[2048];
 
 
         // ===== HANDSHAKE =====
-
         int baseSeq = new Random().nextInt(SEQ_MOD);
-
-
         Packet syn = new Packet();
-
         syn.seq = baseSeq;
-
         syn.flags = Packet.FLAG_SYN;
-
         syn.data = new byte[0];
-
-
         byte[] synRaw = PacketEncoder.encode(syn);
-
         Packet synAck = null;
+
         for (int attempt = 1; attempt <= SYN_MAX_ATTEMPTS; attempt++) {
             socket.send(new DatagramPacket(synRaw, synRaw.length, addr, port));
             try {
@@ -139,29 +112,20 @@ public class Sender {
         ackFinal.data = new byte[0];
         byte[] synFinalRaw = PacketEncoder.encode(ackFinal);
         socket.send(new DatagramPacket(synFinalRaw, synFinalRaw.length, addr, port));
-
         int nextSeq = (baseSeq + 2) & 0xFFFF;
-
         int offset = 0;
 
-
         System.out.println("Connexion établie");
-
 
         // ===== BOUCLE PRINCIPALE =====
 
         while (offset < fileData.length || !inFlight.isEmpty()) {
-
-
             // ENVOI des paquets dans la fenêtre
-
             while (offset < fileData.length && inFlight.size() < cwnd) {
-
 
                 int size = Math.min(MAX_DATA, fileData.length - offset);
 
                 byte[] chunk = Arrays.copyOfRange(fileData, offset, offset + size);
-
 
                 Packet p = new Packet();
 
@@ -169,14 +133,11 @@ public class Sender {
 
                 p.data = chunk;
 
-
                 byte[] raw = PacketEncoder.encode(p);
 
                 socket.send(new DatagramPacket(raw, raw.length, addr, port));
 
-
                 inFlight.put(nextSeq, raw);
-
 
                 offset += size;
 
@@ -184,18 +145,14 @@ public class Sender {
 
             }
 
-
             // RÉCEPTION ACKS
-
             try {
 
                 DatagramPacket dpAck = new DatagramPacket(buffer, buffer.length);
 
                 socket.receive(dpAck);
 
-
                 Packet ack = PacketEncoder.decode(Arrays.copyOf(dpAck.getData(), dpAck.getLength()));
-
 
                 if ((ack.flags & Packet.FLAG_RST) != 0) {
                     System.err.println("Erreur: connexion interrompue par RST pendant le transfert.");
@@ -227,41 +184,27 @@ public class Sender {
                     dupAckRetransmitted = false;
                 }
 
-
                 // --- suppression des paquets confirmés ---
                 inFlight.keySet().removeIf(seq -> seqLessOrEqual(seq, ackSeq));
 
-
                 // --- contrôle de congestion ---
-
                 if (triggerFastRetransmit) {
-
                     // simple fast recovery
-
                     for (byte[] raw : inFlight.values()) {
                         socket.send(new DatagramPacket(
                                 raw,
                                 raw.length,
                                 addr, port));
                     }
-
                 }
-
 
                 printWindow("ACK", cwnd, ssthresh, inFlight.size());
 
-
             } catch (SocketTimeoutException e) {
-
-
                 // --- TIMEOUT ---
-
                 dupAckSeqSet.clear();
                 dupAckRetransmitted = false;
-
-
                 printWindow("TIMEOUT", cwnd, ssthresh, inFlight.size());
-
 
                 for (byte[] raw : inFlight.values()) {
                     socket.send(new DatagramPacket(
@@ -269,9 +212,7 @@ public class Sender {
                             raw.length,
                             addr, port));
                 }
-
             }
-
         }
 
 
@@ -298,8 +239,7 @@ public class Sender {
                     continue;
                 if (PacketEncoder.computeChecksum(finAck) != finAck.checksum)
                     continue;
-                if (finAck.data != null && finAck.data.length >= 2 &&
-                        readU16(finAck.data) == finAckNumExpected) {
+                if (finAck.data != null && finAck.data.length >= 2 && readU16(finAck.data) == finAckNumExpected) {
                     Packet finalAck = new Packet();
                     finalAck.seq = (fin.seq + 1) & 0xFFFF;
                     finalAck.flags = Packet.FLAG_ACK;

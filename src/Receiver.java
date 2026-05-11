@@ -26,7 +26,6 @@ public class Receiver {
         };
     }
 
-
     public static void main(String[] args) throws Exception {
 
         int port = Integer.parseInt(args[0]);
@@ -42,16 +41,11 @@ public class Receiver {
         int lastAckSent = -1;
         int lastRwndSent = -1;
 
-
         System.out.println("Receiver en écoute...");
 
-
         // HANDSHAKE SYN
-
         DatagramPacket dp = new DatagramPacket(buffer, buffer.length);
-
         socket.receive(dp);
-
         Packet syn = PacketEncoder.decode(
                 Arrays.copyOf(dp.getData(), dp.getLength())
         );
@@ -62,19 +56,12 @@ public class Receiver {
             return;
         }
 
-
         // SYN-ACK
-
         Packet synAck = new Packet();
-
         synAck.seq = localSeq;
-
         synAck.ack = seqNext(syn.seq);
-
         synAck.flags = (Packet.FLAG_SYN | Packet.FLAG_ACK);
-
         synAck.data = ackPayload(seqPrev(synAck.ack));
-
 
         socket.send(new DatagramPacket(
 
@@ -93,7 +80,7 @@ public class Receiver {
         expectedSeq = synAck.ack;
 
 
-        // 3e paquet du handshake : SYN final de l'emetteur
+        // 3e paquet du handshake : ACK final de l'emetteur
         DatagramPacket dpFinalAck = new DatagramPacket(buffer, buffer.length);
         socket.receive(dpFinalAck);
         Packet ackfinal = PacketEncoder.decode(
@@ -105,6 +92,7 @@ public class Receiver {
             return;
         }
         if ((ackfinal.flags & Packet.FLAG_ACK) == 0 || ackfinal.seq != expectedSeq) {
+            System.out.println("flags = "+ackfinal.flags);
             throw new IllegalStateException("Handshake invalide: ACK final attendu");
         }
         expectedSeq = seqNext(expectedSeq);
@@ -113,9 +101,7 @@ public class Receiver {
 
         FileOutputStream fos = new FileOutputStream("src/test.txt");
 
-
         // LOOP
-
         while (true) {
 
             DatagramPacket dpData = new DatagramPacket(buffer, buffer.length);
@@ -130,13 +116,7 @@ public class Receiver {
                 break;
             }
 
-            System.out.println(new String(p.data));
-
             fos.write(p.data, 0, p.data.length);
-            System.out.println(fos.toString());
-            //fos.close();
-
-
 
             boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
             if (valid && (p.flags & Packet.FLAG_FIN) != 0) {
@@ -173,39 +153,29 @@ public class Receiver {
                 fos.close();
                 break;
             }
-
             if (valid && p.seq == expectedSeq) {
                 expectedSeq = seqNext(expectedSeq);
 
                 bufferUsed++;
             }
-
             if (bufferUsed > 0){
                 bufferUsed--;
             }
-
 
             int rwnd = BUFFER_MAX - bufferUsed;
             int lastContiguousSeq = seqPrev(expectedSeq);
 
             Packet ack = new Packet();
-
             ack.seq = localSeq;
             ack.flags = Packet.FLAG_ACK;
             ack.data = ackPayload(lastContiguousSeq);
 
-
             socket.send(new DatagramPacket(
-
                     PacketEncoder.encode(ack),
-
                     PacketEncoder.encode(ack).length,
-
                     dpData.getAddress(),
+                    dpData.getPort()));
 
-                    dpData.getPort()
-
-            ));
             localSeq = seqNext(localSeq);
 
             if (expectedSeq != lastAckSent || rwnd != lastRwndSent) {
