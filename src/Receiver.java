@@ -1,6 +1,9 @@
 import java.io.FileOutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Random;
 
@@ -185,5 +188,16 @@ public class Receiver {
             }
         }
         socket.close();
+
+        Path fichier_recu = Paths.get("src/test.txt");
+        Path fichier_de_controle = Paths.get("src/test_controle.txt");
+
+        long mismatch = Files.mismatch(fichier_recu, fichier_de_controle);
+
+        if (mismatch == -1) {
+            System.out.println("Les fichiers sont identiques.");
+        } else {
+            System.out.println("Les fichiers sont différents à la position : " + mismatch);
+        }
     }
 }
