@@ -37,6 +37,10 @@ public class Sender {
         return ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
     }
 
+    static int readU16At(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
+    }
+
     static void printWindow(String event, int cwnd, int ssthresh, int inFlight) {
 
         System.out.println("[WINDOW] " + event +
@@ -67,6 +71,7 @@ public class Sender {
         int lastAck = -1;
         boolean dupAckRetransmitted = false;
         Set<Integer> dupAckSeqSet = new HashSet<>();
+        int ackSinceCA = 0; // compteur pour congestion avoidance (AIMD)
         socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
         TreeMap<Integer, byte[]> inFlight = new TreeMap<>();
         byte[] buffer = new byte[2048];
@@ -162,10 +167,11 @@ public class Sender {
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
 
-                if (ack.data == null || ack.data.length < 2)
+                if (ack.data == null || ack.data.length < 4)
                     continue;
 
                 int ackSeq = readU16(ack.data);
+                int rwnd = readU16At(ack.data, 2);
                 int ackPacketSeq = ack.seq & 0xFFFF;
 
                 boolean triggerFastRetransmit = false;
@@ -173,20 +179,38 @@ public class Sender {
                     if (!dupAckRetransmitted && dupAckSeqSet.add(ackPacketSeq) && dupAckSeqSet.size() >= 3) {
                         triggerFastRetransmit = true;
                         dupAckRetransmitted = true;
+                        // fast retransmit: adjust ssthresh and cwnd
+                        ssthresh = Math.max(1, cwnd / 2);
+                        cwnd = ssthresh + 3;
                     }
                 } else {
+                    // nouveau ACK -> augmentation de cwnd
                     lastAck = ackSeq;
                     dupAckSeqSet.clear();
                     dupAckSeqSet.add(ackPacketSeq);
                     dupAckRetransmitted = false;
+
+                    if (cwnd < ssthresh) {
+                        // slow start
+                        cwnd++;
+                    } else {
+                        // congestion avoidance (AIMD): increase by ~1/RTT
+                        ackSinceCA++;
+                        if (ackSinceCA >= cwnd) {
+                            cwnd++;
+                            ackSinceCA = 0;
+                        }
+                    }
                 }
+
+                // --- apply flow control limit from receiver rwnd ---
+                cwnd = Math.max(1, Math.min(cwnd, rwnd));
 
                 // --- suppression des paquets confirmés ---
                 inFlight.keySet().removeIf(seq -> seqLessOrEqual(seq, ackSeq));
 
-                // --- contrôle de congestion ---
+                // --- contrôle de congestion: retransmission si nécessaire ---
                 if (triggerFastRetransmit) {
-                    // simple fast recovery
                     for (byte[] raw : inFlight.values()) {
                         socket.send(new DatagramPacket(
                                 raw,
@@ -201,6 +225,10 @@ public class Sender {
                 // --- TIMEOUT ---
                 dupAckSeqSet.clear();
                 dupAckRetransmitted = false;
+                // reduce congestion window
+                ssthresh = Math.max(1, cwnd / 2);
+                cwnd = 1;
+                ackSinceCA = 0;
                 printWindow("TIMEOUT", cwnd, ssthresh, inFlight.size());
 
                 for (byte[] raw : inFlight.values()) {

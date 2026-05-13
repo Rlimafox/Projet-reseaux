@@ -21,11 +21,14 @@ public class Receiver {
         return (x - 1) & 0xFFFF;
     }
 
-    static byte[] ackPayload(int ackSeq) {
+    static byte[] ackPayload(int ackSeq, int rwnd) {
         int v = ackSeq & 0xFFFF;
+        int r = rwnd & 0xFFFF;
         return new byte[]{
                 (byte) ((v >>> 8) & 0xFF),
-                (byte) (v & 0xFF)
+                (byte) (v & 0xFF),
+                (byte) ((r >>> 8) & 0xFF),
+                (byte) (r & 0xFF)
         };
     }
 
@@ -64,7 +67,7 @@ public class Receiver {
         synAck.seq = localSeq;
         int synAckExpectedSeq = seqNext(syn.seq);
         synAck.flags = (Packet.FLAG_SYN | Packet.FLAG_ACK);
-        synAck.data = ackPayload(seqPrev(synAckExpectedSeq));
+        synAck.data = ackPayload(seqPrev(synAckExpectedSeq), BUFFER_MAX);
 
         socket.send(new DatagramPacket(
 
@@ -127,7 +130,8 @@ public class Receiver {
                 Packet finAck = new Packet();
                 finAck.seq = localSeq;
                 finAck.flags = (byte) (Packet.FLAG_FIN | Packet.FLAG_ACK);
-                finAck.data = ackPayload(seqPrev(expectedSeq));
+                int rwnd = BUFFER_MAX - bufferUsed;
+                finAck.data = ackPayload(seqPrev(expectedSeq), rwnd);
                 byte[] finAckRaw = PacketEncoder.encode(finAck);
                 socket.send(new DatagramPacket(
                         finAckRaw,
@@ -170,7 +174,7 @@ public class Receiver {
             Packet ack = new Packet();
             ack.seq = localSeq;
             ack.flags = Packet.FLAG_ACK;
-            ack.data = ackPayload(lastContiguousSeq);
+            ack.data = ackPayload(lastContiguousSeq, rwnd);
 
             socket.send(new DatagramPacket(
                     PacketEncoder.encode(ack),
