@@ -4,7 +4,6 @@ public class Packet {
     static final byte FLAG_FIN = 0x04;
     static final byte FLAG_RST = 0x08;
     int seq;
-    int ack;
     byte flags;
     byte[] data;
 }

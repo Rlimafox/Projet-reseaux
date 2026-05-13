@@ -62,9 +62,9 @@ public class Receiver {
         // SYN-ACK
         Packet synAck = new Packet();
         synAck.seq = localSeq;
-        synAck.ack = seqNext(syn.seq);
+        int synAckExpectedSeq = seqNext(syn.seq);
         synAck.flags = (Packet.FLAG_SYN | Packet.FLAG_ACK);
-        synAck.data = ackPayload(seqPrev(synAck.ack));
+        synAck.data = ackPayload(seqPrev(synAckExpectedSeq));
 
         socket.send(new DatagramPacket(
 
@@ -80,7 +80,7 @@ public class Receiver {
         localSeq = seqNext(localSeq);
 
 
-        expectedSeq = synAck.ack;
+        expectedSeq = synAckExpectedSeq;
 
 
         // 3e paquet du handshake : ACK final de l'emetteur
