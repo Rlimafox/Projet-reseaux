@@ -1,51 +1,57 @@
-import java.nio.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 public class PacketEncoder {
 
+    // Header (format protocole):
+    // data_length (2) | seq (2) | flags (4 bits + 4 bits padding) = 5 octets
+    private static final int HEADER_SIZE = 5;
+
     public static byte[] encode(Packet p) {
         int dataLength = (p.data == null) ? 0 : p.data.length;
-        int totalLength = 5 + dataLength; // 2 bytes length + 2 bytes seq + 1 byte flags + data
+        if (dataLength > 0xFFFF) {
+            throw new IllegalArgumentException("Payload too large for 16-bit length: " + dataLength);
+        }
+        int totalLength = HEADER_SIZE + dataLength;
 
         ByteBuffer buffer = ByteBuffer.allocate(totalLength);
         buffer.order(ByteOrder.BIG_ENDIAN);
 
-        // --- header ---
-        buffer.putShort((short) totalLength);
-        buffer.putShort((short) p.seq);
+        // ----- HEADER -----
+        buffer.putShort((short) dataLength);         // 2 octets
+        buffer.putShort((short) (p.seq & 0xFFFF));   // 2 octets
+        buffer.put((byte) (p.flags & 0x0F));         // 4 bits utiles + padding
 
-        // --- flags sur 4 bits bas ---
-        byte flags = 0;
-        if (p.syn) flags |= 0b1000;
-        if (p.ack) flags |= 0b0100;
-        if (p.fin) flags |= 0b0010;
-        if (p.rst) flags |= 0b0001;
-        buffer.put(flags);
-
-        // --- data ---
-        if (p.data != null)
+        // ----- DATA -----
+        if (dataLength > 0) {
             buffer.put(p.data);
+        }
 
         return buffer.array();
     }
 
     public static Packet decode(byte[] raw) {
+        if (raw.length < HEADER_SIZE) {
+            throw new IllegalArgumentException("Packet too short: " + raw.length);
+        }
+
         ByteBuffer buffer = ByteBuffer.wrap(raw);
         buffer.order(ByteOrder.BIG_ENDIAN);
 
         Packet p = new Packet();
 
-        // --- header ---
-        p.length = Short.toUnsignedInt(buffer.getShort());
+        // ----- HEADER -----
+        int dataLength = Short.toUnsignedInt(buffer.getShort());
         p.seq = Short.toUnsignedInt(buffer.getShort());
+        p.flags = (byte) (buffer.get() & 0x0F);
 
-        byte flags = buffer.get();
-        p.syn = (flags & 0b1000) != 0;
-        p.ack = (flags & 0b0100) != 0;
-        p.fin = (flags & 0b0010) != 0;
-        p.rst = (flags & 0b0001) != 0;
+        if (raw.length != HEADER_SIZE + dataLength) {
+            throw new IllegalArgumentException(
+                    "Packet length mismatch. expected=" + (HEADER_SIZE + dataLength) + ", actual=" + raw.length
+            );
+        }
 
-        // --- data ---
-        int dataLength = p.length - 5;
+        // ----- DATA -----
         if (dataLength > 0) {
             p.data = new byte[dataLength];
             buffer.get(p.data);

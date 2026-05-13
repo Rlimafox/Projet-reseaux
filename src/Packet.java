@@ -1,11 +1,10 @@
 public class Packet {
-    public int length;
-    public int seq;
-
-    public boolean syn;
-    public boolean ack;
-    public boolean fin;
-    public boolean rst;
-
-    public byte[] data;
+    static final byte FLAG_SYN = 0x01;
+    static final byte FLAG_ACK = 0x02;
+    static final byte FLAG_FIN = 0x04;
+    static final byte FLAG_RST = 0x08;
+    int seq;
+    int ack;
+    byte flags;
+    byte[] data;
 }
