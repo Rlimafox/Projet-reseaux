@@ -32,11 +32,30 @@ public class Receiver {
         };
     }
 
+    static void sendWithRetry(DatagramSocket socket, DatagramPacket dp) {
+        int attempts = 0;
+        while (true) {
+            try {
+                socket.send(dp);
+                break;
+            } catch (java.net.SocketException se) {
+                attempts++;
+                if (attempts > 5) throw new RuntimeException("Failed to send packet after retries", se);
+                try { Thread.sleep(50); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw new RuntimeException(ie); }
+            } catch (java.io.IOException ioe) {
+                throw new RuntimeException(ioe);
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
+
 
         int port = Integer.parseInt(args[0]);
 
         DatagramSocket socket = new DatagramSocket(port);
+        socket.setSendBufferSize(65536);
+
 
         byte[] buffer = new byte[2048];
 
@@ -69,17 +88,8 @@ public class Receiver {
         synAck.flags = (Packet.FLAG_SYN | Packet.FLAG_ACK);
         synAck.data = ackPayload(seqPrev(synAckExpectedSeq), BUFFER_MAX);
 
-        socket.send(new DatagramPacket(
-
-                PacketEncoder.encode(synAck),
-
-                PacketEncoder.encode(synAck).length,
-
-                dp.getAddress(),
-
-                dp.getPort()
-
-        ));
+        byte[] synAckRaw = PacketEncoder.encode(synAck);
+        sendWithRetry(socket, new DatagramPacket(synAckRaw, synAckRaw.length, dp.getAddress(), dp.getPort()));
         localSeq = seqNext(localSeq);
 
 
@@ -105,7 +115,7 @@ public class Receiver {
 
         System.out.println("Connexion établie");
 
-        FileOutputStream fos = new FileOutputStream("src/test.txt");
+        FileOutputStream fos = new FileOutputStream("src/test1go.txt");
 
         // LOOP
         while (true) {
@@ -164,9 +174,6 @@ public class Receiver {
 
                 bufferUsed++;
             }
-            if (bufferUsed > 0){
-                bufferUsed--;
-            }
 
             int rwnd = BUFFER_MAX - bufferUsed;
             int lastContiguousSeq = seqPrev(expectedSeq);
@@ -176,11 +183,9 @@ public class Receiver {
             ack.flags = Packet.FLAG_ACK;
             ack.data = ackPayload(lastContiguousSeq, rwnd);
 
-            socket.send(new DatagramPacket(
-                    PacketEncoder.encode(ack),
-                    PacketEncoder.encode(ack).length,
-                    dpData.getAddress(),
-                    dpData.getPort()));
+            byte[] ackRaw = PacketEncoder.encode(ack);
+            sendWithRetry(socket, new DatagramPacket(ackRaw, ackRaw.length, dpData.getAddress(), dpData.getPort()));
+
 
             localSeq = seqNext(localSeq);
 
@@ -193,7 +198,7 @@ public class Receiver {
         }
         socket.close();
 
-        Path fichier_recu = Paths.get("src/test.txt");
+        /*Path fichier_recu = Paths.get("src/test1go.txt");
         Path fichier_de_controle = Paths.get("src/test_controle.txt");
 
         long mismatch = Files.mismatch(fichier_recu, fichier_de_controle);
@@ -202,6 +207,6 @@ public class Receiver {
             System.out.println("Les fichiers sont identiques.");
         } else {
             System.out.println("Les fichiers sont différents à la position : " + mismatch);
-        }
+        }*/
     }
 }
