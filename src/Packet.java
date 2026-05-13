@@ -6,6 +6,5 @@ public class Packet {
     int seq;
     int ack;
     byte flags;
-    int checksum;
     byte[] data;
 }

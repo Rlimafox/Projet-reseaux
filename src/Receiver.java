@@ -118,8 +118,7 @@ public class Receiver {
 
             fos.write(p.data, 0, p.data.length);
 
-            boolean valid = PacketEncoder.computeChecksum(p) == p.checksum;
-            if (valid && (p.flags & Packet.FLAG_FIN) != 0) {
+            if ((p.flags & Packet.FLAG_FIN) != 0) {
                 if (p.seq == expectedSeq)
                     expectedSeq = seqNext(expectedSeq);
                 Packet finAck = new Packet();
@@ -153,7 +152,7 @@ public class Receiver {
                 fos.close();
                 break;
             }
-            if (valid && p.seq == expectedSeq) {
+            if (p.seq == expectedSeq) {
                 expectedSeq = seqNext(expectedSeq);
 
                 bufferUsed++;

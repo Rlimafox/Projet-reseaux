@@ -162,9 +162,6 @@ public class Sender {
                 if ((ack.flags & Packet.FLAG_ACK) == 0)
                     continue;
 
-                if (PacketEncoder.computeChecksum(ack) != ack.checksum)
-                    continue;
-
                 if (ack.data == null || ack.data.length < 2)
                     continue;
 
@@ -236,8 +233,6 @@ public class Sender {
                     return;
                 }
                 if ((finAck.flags & Packet.FLAG_FIN) == 0 || (finAck.flags & Packet.FLAG_ACK) == 0)
-                    continue;
-                if (PacketEncoder.computeChecksum(finAck) != finAck.checksum)
                     continue;
                 if (finAck.data != null && finAck.data.length >= 2 && readU16(finAck.data) == finAckNumExpected) {
                     Packet finalAck = new Packet();

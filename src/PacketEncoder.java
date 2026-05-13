@@ -61,14 +61,4 @@ public class PacketEncoder {
 
         return p;
     }
-
-    public static int computeChecksum(Packet p) {
-        // Le sujet précise que la corruption est couverte par le checksum UDP.
-        return 0;
-    }
-
-    public static int computeChecksum(int seq, int ack, byte flags, short len, byte[] data) {
-        // Signature conservée pour compatibilité avec le code existant.
-        return 0;
-    }
 }
