@@ -115,7 +115,7 @@ public class Receiver {
 
         System.out.println("Connexion établie");
 
-        FileOutputStream fos = new FileOutputStream("src/test1go.txt");
+        FileOutputStream fos = new FileOutputStream(args[1]);
 
         // LOOP
         while (true) {
